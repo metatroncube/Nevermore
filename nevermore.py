@@ -30,7 +30,15 @@ def getnew(input,key="new"):
         try: input=input[key]
         except:pass
     return input
-
+def print_objectswith_str_(*objlist_list,end=" "):
+    """打印对象列表，如果不是可迭代对象则直接打印"""
+    for objlist in objlist_list:
+        if isinstance(objlist,str) or not hasattr(objlist,"__iter__"):
+            print(objlist,end=end)
+        else:
+            for obj in objlist:
+                print_objectswith_str_(obj,end=end)
+                print()
 def keep2dim(K):
 
     if K is None:
@@ -58,7 +66,19 @@ def getvalue(var,key="value"):
     else: return var
 
     ##--------
-
+def get_global_from(name_or_baseid,copyflag=False,from_list=None):
+    if from_list is None:
+        from_list = global_MonsterBaseList + global_SkillList + global_EffectList
+    for obj in from_list:
+        if obj.name == name_or_baseid or obj.baseID == name_or_baseid:
+            return copy.deepcopy(obj) if copyflag else obj
+    return None
+def get_global_skill(name_or_baseid,copyflag=False):
+    return get_global_from(name_or_baseid,copyflag=copyflag,from_list=global_SkillList)
+def get_global_effect(name_or_baseid,copyflag=False):
+    return get_global_from(name_or_baseid,copyflag=copyflag,from_list=global_EffectList)
+def get_global_actor(name_or_baseid,copyflag=False):
+    return get_global_from(name_or_baseid,copyflag=copyflag,from_list=global_MonsterBaseList)
 class SkillType(Enum):
     """技能类型枚举"""
     Active =auto()# 1
@@ -209,14 +229,14 @@ def strcat(*kargs,space=True):
 class Skill():
     """技能类，表示一个角色的技能"""
     def __init__(self,name="",baseID=0,default_param="",parameters=[],description="" 
-            ,skilltype=SkillType.Active,delivery=None,targetpermit=None,mana_cost=0,ammunition=1  ): 
+            ,skilltype=None,delivery=None,targetpermit=None,mana_cost=0,ammunition=1  ): 
 
         
         self.name=name
         self.baseID=baseID
         self.default_param=default_param
         self.description=description
-        self.skilltype=skilltype        #
+        # self.skilltype=skilltype        #
         self.parameters=parameters
 
         self.effect_list=[empty_magic_effect]
@@ -229,13 +249,47 @@ class Skill():
         self.ammunition=ActorValue(ActorValueType.amount,ammunition)#弹药量
         self.allow_attack=True#该回合正常普通攻击
         self.AI_module=None
-        ######
+        ######        ['攻击中','攻击时']
+        self.skilltype=DefaultValue_If_None(skilltype,SkillType.Passive ) 
 
 
         self.delivery=DefaultValue_If_None(delivery,DeliveryType.Target if self.skilltype==SkillType.Active else DeliveryType.Contact) 
 
         self.targetpermit=To_List( DefaultValue_If_None(targetpermit,[TargetPermit.Enemy ])  ) #注意是list！！！
+    #默认print 返回name字符串
+    def __str__(self):
+        return "技能:"+str(self.name)
 
+    def showinfo(self):
+        """显示技能信息"""
+        print("技能名称:",self.name)
+        print("技能类型:",self.skilltype)
+        print("施法方式:",self.delivery)
+        print("目标许可:",[term.name for term in self.targetpermit])
+        print("描述:",self.description)
+        print("参数:",self.parameters)
+        print("效果列表:")
+        for effect in self.effect_list:
+            print(" - ",effect.name)
+    def process_skill_effects(self,flag_clear=True):
+        if flag_clear:
+            self.effect_list=[]
+        skillbase=self
+        #寒霜攻击,a:1,攻击中带有冰寒的力量，将对手缓慢冻结\n第一次命中开始对手攻速降低\v%
+        if skillbase.name=="寒霜攻击":
+            #寒霜攻击
+            effect=get_global_effect("寒霜攻击",copyflag=True)
+
+            effect.magnitude= -float(skillbase.parameters[0]) if skillbase.parameters else -10
+            # effect.duration=10  #     默认持续10回合
+            skillbase.effect_list.append(effect)
+        # 腐蚀毒素,a:3,攻击时释放出毒素缓慢腐蚀敌人的身躯\n每回合攻击额外造成\v点无视防御的物理伤害
+        if skillbase.name=="腐蚀毒素":
+            #腐蚀毒素
+            effect=get_global_effect("腐蚀毒素",copyflag=True)
+            effect.magnitude= -float(skillbase.parameters[0]) if skillbase.parameters else -10
+            skillbase.effect_list.append(effect)
+        return skillbase.effect_list
 
 #[自身攻击-目标防御]*我方攻速系数*目标护甲减伤*目标闪避减伤*暴击
 def _clip(v,min_=None,max_=None):
@@ -403,6 +457,8 @@ class Battle():
 
 class Actor():
     """角色类，表示一个战斗单位"""
+    def __str__(self):
+        return "角色:"+str(self.name)
     def __init__(self,name="",baseID=0,health=100,mana=0,level=1,attack=0,defence=0,armor=0,
             atkrate=100,avoid=0,criticalAtk=[1,0,True],block=0,magicresist=0,magicblock=0,healthregen=0,manaregen=0,magicpower=0,
              STRE=0,AGIL=0,INTEL=0,
@@ -590,32 +646,44 @@ class Actor():
         """处理角色的技能列表，将技能ID和参数转换为技能对象列表"""
         reader_pointer=0
         skillList=[]
-        lis=self.skilllist
+        lis=self.skilllist if isinstance(self.skilllist,list) and len(self.skilllist)==2 else [[],[]]
         for id in lis[0]:
             skill=copy.deepcopy(global_SkillList[id]) 
             # print(skill.description)
-            skill.parameters=lis[1][reader_pointer].copy()            
+            skill.parameters=lis[1][reader_pointer].copy()   if len(lis[1])>reader_pointer else []  
+            # if len(lis[1])<=reader_pointer:
+                # print(self.name,"技能参数不足",skill.name,lis)
             if "\\v" in skill.description:
                 temp=skill.description.split("\\v")
                 # print(lis[1][reader_pointer])
                 joins=temp[0]
                 for i in range(len(temp)-1):
+                    if len(lis[1])<=reader_pointer:
+                        print(self.name,"技能参数不足",skill.name,lis)
+                        break
                     if i ==len(temp)-2 and len(lis[1][reader_pointer][i:])>1:
                         joins=joins+str(lis[1][reader_pointer][i:])+temp[i+1]
                     else:
-                        joins=joins+lis[1][reader_pointer][i]+temp[i+1]
+                        if i >=len( lis[1][reader_pointer] ):
+                            joins=joins+"0"+temp[i+1]
+                            print("warning skill param len",self.name,skill.name,lis)
+                        else:
+                            joins=joins+lis[1][reader_pointer][i]+temp[i+1]
                 skill.description=(joins)
                 reader_pointer+=1
+            skill.process_skill_effects()
 
 
             skillList.append(skill)
         self.skilllist_obj=skillList
         self.active_spelllist=[term for term in self.skilllist_obj if term.skilltype==SkillType.Active]
         self.passive_skilllist=[term for term in self.skilllist_obj if term.skilltype==SkillType.Passive]
-class ActorBase(Actor):
-    """角色基础类，表示一个角色的基础属性"""
-    def __init__(self,**kwargs) -> None:
-        super().__init__(**kwargs)
+# class Actor(Actor):
+#     def __str__(self):
+#         return "ActorBase:"+str(self.name)
+#     """角色基础类，表示一个角色的基础属性"""
+#     def __init__(self,**kwargs) -> None:
+#         super().__init__(**kwargs)
 
 class ActorRef(Actor):
     test=0
@@ -644,7 +712,7 @@ def Apply_Damage(targ : Actor,damage=0,flag_aftertex=False,self=None  ,damagetyp
     if True:#test
         if not targ.Has_EffectType(EffectType.ValueModifier) :
             add_listener("OnEffectStart", on_effect_start_burn)
-        dispatch_event("OnEffectStart", effect=Effect(name="火印",magnitude=1000,duration=3,archetype=EffectType.ValueModifier,associatedItem=ActorValueType.health), caster=self, target=targ)   
+        dispatch_event("OnEffectStart")#, effect=Effect(name="火印",magnitude=1000,duration=3,archetype=EffectType.ValueModifier,associatedItem=ActorValueType.health), caster=self, target=targ)   
     #
     targ.ModActorValue(avtype=ActorValueType.health,value=-v)
     return v
@@ -671,10 +739,12 @@ def cal_poison_damage(v,self : Actor,targ : Actor,state={"round":1,"environment"
 def cal_custom_damage(v,self : Actor,targ : Actor,state={"round":1,"environment":[]}):
     return v
 class Effect():
+    def __str__(self):
+        return "效果:"+str(self.name)
     """魔法效果类，表示一个魔法效果"""
-    def __init__(self,name="",magnitude=0,duration=0, archetype=EffectType.Empty,max_stack=1,keywords_stack=None,associatedItem=None):#stack=Stack
+    def __init__(self,name="",baseID=0,magnitude=0,duration=0, archetype=EffectType.Empty,max_stack=1,keywords_stack=None,associatedItem=None):#stack=Stack
         self.name=name
-
+        self.baseID=baseID
         self.magnitude=magnitude
         self.duration=duration
         # self.rest_duration=self.duration
@@ -690,6 +760,14 @@ class Effect():
         self.associatedItem=associatedItem
         self.resist=cal_custom_damage
         self.kwargs={}
+    def showinfo(self):
+        print(f"效果名称: {self.name}")
+        print(f"效果类型: {self.archetype}")
+        print(f"效果强度: {self.magnitude}")
+        print(f"效果持续时间: {self.duration}")
+        print(f"效果最大层数: {self.max_stack}")
+        print(f"效果关键字: {self.keywords_stack}")
+        print(f"效果关联属性: {self.associatedItem}")
     def Apply(self,caster:Actor,target:Actor):
         """应用魔法效果"""
         self.caster=caster
@@ -722,7 +800,13 @@ class Effect():
             self.target.ModActorValue(avtype=self.associatedItem,value=-self.value,**self.kwargs)
         if self.archetype==EffectType.PeakValueModifier:
             self.target.ModActorPeakValue(avtype=self.associatedItem,value=-self.value,**self.kwargs)
-
+        """取消注册事件监听器"""
+        remove_listener("OnEffectStart", self.Apply)
+        remove_listener("OnEffectEnd", self.Dispel)
+# class Effect(Effect):
+#     """魔法效果基础类，表示一个魔法效果的基础属性"""
+#     def __init__(self,**kwargs) -> None:
+#         super().__init__(**kwargs)
 
 # 全局事件总线（注册/取消/触发）
 _event_listeners = {}
@@ -1588,13 +1672,59 @@ def postset_bat():
     global_MonsterBaseList[344].health.ResetValue(465000)
     global_MonsterBaseList[344].attack.ResetValue(48000)
     global_MonsterBaseList[344].defence.ResetValue(30000)
+    for actorbase in global_MonsterBaseList:
+        actorbase.deal_skillList()
 
 empty_magic_effect=Effect(name="空效果",magnitude=0,duration=0,archetype=EffectType.Empty)
 # empty_magic_effect=Effect("empty_magic_effect")
 empty_buff=Effect("empty_buff",magnitude=1,duration=1)
 global_SkillList=[Skill()]
+global_EffectList=[empty_magic_effect]
 Justin=Actor(name="贾斯汀",health=ActorValue(currentvalue=150,maxvalue=1000),mana=ActorValue(currentvalue=4,maxvalue=100),level=6,attack=75,defence=63,armor=5,atkrate=100,avoid=0,block=0,healthregen=4)
 global_MonsterBaseList=[copy.deepcopy(Justin)]
+#加载 魔法效果
+dat_effect = pandas.read_csv("./csv/Effects.csv",  header=0)
+for i in range(len(dat_effect)):
+    dic=dat_effect.loc[i].to_dict()
+
+    effectbase=Effect(name=dic["Name"],baseID=dic['BaseID'],magnitude=dic["Magnitude"],
+                          archetype=EffectType[dic['Archetype']],keywords_stack=dic["keywords_stack"]
+                          ,max_stack=dic["max_stack"],
+                      associatedItem=ActorValueType[dic['AssociatedItem']], duration=dic["Duration"] )
+    # effectbase=Effect()
+    global_EffectList.append(effectbase)
+
+#加载 永不复还 技能
+dat_skill = pandas.read_csv("./csv/skills.csv",  header=0)
+for i in range(len(dat_skill)):
+    dic=dat_skill.loc[i].to_dict()
+
+    skillbase=Skill(name=dic["Name"],baseID=dic['BaseID'],default_param=dic["DefaultParams"]
+                    ,description=dic["Description"])
+    skillbase.process_skill_effects()
+    global_SkillList.append(skillbase)
+
+#加载 永不复还 敌人单位
+dat = pandas.read_csv("./csv/enemies.csv", comment='%', header=0)
+print(len(dat))
+for i in range(len(dat)):
+    # p
+    dic=dat.loc[i].to_dict()
+    if dic["MagicDef"]  ==111:
+        dic["MagicDef"]=0
+    actorbase=Actor(name=dic["Name"],baseID=dic['BaseID'],level=dic["Level"],health=dic["HealthMax"],mana=dic["ManaMax"],attack=dic["Attack"],defence=dic["Defence"],
+        atkrate=dic["AtkRate"],armor=dic["Armor"] ,avoid=0,magicblock=0,magicresist= dic["MagicDef"],gold=dic["Gold"],expgain=dic["ExpGain"],
+        healthregen=dic["HealthRegen"],manaregen=dic["ManaRegen"],skilllist=loadskill(dic))
+    # print(actorbase.name)
+    
+    
+    global_MonsterBaseList.append(actorbase)
+    
+
+
+postset_bat()
+
+
 if __name__ == "__main__":
 
     print(empty_magic_effect)
