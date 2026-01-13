@@ -3,10 +3,13 @@ import numpy as np
 import math,copy
 from enum import Enum, auto
 import csv,pandas
+import functools
 global_max_rounds=999
+global_max_rounds_test=5
 global_armorconst=0.06
 flag_showinfo_attack=True
 flag_showinfo_regen=True
+flag_input_in_battle=True
 global_levelname=["_","下级佣兵","中级佣兵","高级佣兵","特级佣兵","王牌佣兵", #5
     "荣耀佣兵","辉煌佣兵","准职业者","黑铁职业者","青铜职业者",#10
     "白银职业者","黄金职业者","蓝玉职业者","紫晶职业者","半步英雄",
@@ -366,13 +369,19 @@ class Group():
         """返回阵营中所有存活的成员"""
         return [term for term in self.members if term.Is_Alive()]
 
-    def Show_Members(self):
+    def Show_Members(self,flag_showstate=False):
         """返回阵营中所有成员的名称列表"""
         for i in range(len(self.members)) :
             term=self.members[i]
             if term.Is_Alive():
                 frontier=i
-        return "["+",".join([term.name for term in self.members]    )   +"]"
+        returninfo="["+",".join([term.name for term in self.members]    )   +"]"
+
+        if flag_showstate:
+            print("阵营成员状态:")
+            for term in self.members:
+                term.showstate(full=1,flag_show_max=False)
+        return returninfo
 
 
 
@@ -403,7 +412,7 @@ class Battle():
             if self. winner is not None:
                 print("阵营胜利",self.winner,self.Groups[self.winner].Show_Members())
                 break
-            if r>20:            break
+            if r>global_max_rounds_test:            break
         self.End_Battle()
 
 
@@ -411,9 +420,13 @@ class Battle():
     def End_Battle(self):
         for i in self.order:
             for actor in self.Groups[i].members:
-                actor.in_battle=False
+                actor.End_Battle()
     def Start_OneTurn(self,r=1):
         """开始一轮战斗"""
+        if flag_input_in_battle:
+            self.Groups[0].Show_Members(flag_showstate=True)
+            self.Groups[1].Show_Members(flag_showstate=True)
+            input("回合 %d 开始，按回车继续..." %r)
         #没有被沉默？
         # self.attack_once(other)
         #反击？
@@ -538,7 +551,7 @@ class Actor():
         return bool(self.parent_group == targ.parent_group)
     def cast_spell(self,spell:Skill,target=None):#  发动技能效果  
         """施放技能"""
-        assert spell.skilltype==SkillType.Active
+        # assert spell.skilltype==SkillType.Active
         if target is None:
             if spell.delivery==DeliveryType.Self:
                 target=self
@@ -620,6 +633,20 @@ class Actor():
             if buff.baseID ==effid :
                 haseff=True
         return haseff
+    def End_Battle(self):
+        """结束战斗，清除战斗状态"""
+        self.in_battle=False
+        # self.parent_group=None
+        #dispell
+        for buff in self.buff_effectlist:
+            if buff is None:
+                self.buff_effectlist.remove(buff)
+                print("warning: buff is None",self.name)
+            else:
+                if buff.dispell_after_battle:
+                    buff.Dispell(self)
+                else:
+                    print("保留buff:",buff.name,self.name)
     def instantiate(self):
         """实例化角色，返回一个新的角色对象"""
         aaa= copy.deepcopy(self)  
@@ -710,9 +737,13 @@ def Apply_Damage(targ : Actor,damage=0,flag_aftertex=False,self=None  ,damagetyp
         v=v
     event_record_damage(v,self,targ,damagetype,state)
     if True:#test
-        if not targ.Has_EffectType(EffectType.ValueModifier) :
-            add_listener("OnEffectStart", on_effect_start_burn)
-        dispatch_event("OnEffectStart")#, effect=Effect(name="火印",magnitude=1000,duration=3,archetype=EffectType.ValueModifier,associatedItem=ActorValueType.health), caster=self, target=targ)   
+        # if not targ.Has_EffectType(EffectType.ValueModifier) :
+            # add_listener("OnEffectStart", on_effect_start_burn)
+        #检查self被动技能列表
+        for skill in self.passive_skilllist:
+            #cast_spell
+                self.cast_spell(skill,target=targ)
+        # dispatch_event("OnEffectStart")#, effect=Effect(name="火印",magnitude=1000,duration=3,archetype=EffectType.ValueModifier,associatedItem=ActorValueType.health), caster=self, target=targ)   
     #
     targ.ModActorValue(avtype=ActorValueType.health,value=-v)
     return v
@@ -739,27 +770,46 @@ def cal_poison_damage(v,self : Actor,targ : Actor,state={"round":1,"environment"
 def cal_custom_damage(v,self : Actor,targ : Actor,state={"round":1,"environment":[]}):
     return v
 class Effect():
+    # trigger_on_apply: bool = True#增益减益True  中毒治疗True 
+    # recover_on_remove: bool = False#增益减益True  中毒治疗False
     def __str__(self):
         return "效果:"+str(self.name)
     """魔法效果类，表示一个魔法效果"""
-    def __init__(self,name="",baseID=0,magnitude=0,duration=0, archetype=EffectType.Empty,max_stack=1,keywords_stack=None,associatedItem=None):#stack=Stack
+    def __init__(self,name="",baseID=0,magnitude=0,duration=0
+                 , archetype=EffectType.Empty,max_stack=1,
+                 dispell_after_battle=True,
+                 keywords_stack=None,associatedItem=None,target=None,caster=None,trigger_on_apply=None,recover_on_remove=None,trigger_on_turn_start=None):#stack=Stack
         self.name=name
         self.baseID=baseID
         self.magnitude=magnitude
         self.duration=duration
+        self.rest_duration=duration
         # self.rest_duration=self.duration
         self.archetype=archetype
         self.max_stack=max_stack
         self.keywords_stack=keywords_stack
 
+        self.target=target
+        self.caster=caster
+
 
         self.active=False
+        self.dispell_after_battle=dispell_after_battle
 
 
         #这几项需要自定义
         self.associatedItem=associatedItem
         self.resist=cal_custom_damage
         self.kwargs={}
+        self.extra_custom_scripts=[]
+
+        maybe_damage_heal=False
+        if self.associatedItem in [ActorValueType.health,ActorValueType.mana] and self.archetype in [EffectType.ValueModifier ]:
+            maybe_damage_heal=True
+
+        self.trigger_on_apply = DefaultValue_If_None(trigger_on_apply, True )
+        self.trigger_on_turn_start = DefaultValue_If_None(trigger_on_turn_start, maybe_damage_heal )
+        self.recover_on_remove = DefaultValue_If_None(recover_on_remove, not maybe_damage_heal )
     def showinfo(self):
         print(f"效果名称: {self.name}")
         print(f"效果类型: {self.archetype}")
@@ -768,90 +818,64 @@ class Effect():
         print(f"效果最大层数: {self.max_stack}")
         print(f"效果关键字: {self.keywords_stack}")
         print(f"效果关联属性: {self.associatedItem}")
+        print(f"效果trig_recover: {self.trigger_on_apply},{self.trigger_on_turn_start},{self.recover_on_remove}")
     def Apply(self,caster:Actor,target:Actor):
         """应用魔法效果"""
+        print(f"施法者: {caster.name}, 目标: {target.name}, 效果: {self.name}"  )
         self.caster=caster
         self.target=target
         self.rest_duration=self.duration
         self.value=self.resist( self.magnitude,caster,target)
     
-        if self.archetype==EffectType.ValueModifier:
-            target.ModActorValue(avtype=self.associatedItem,value=self.value,**self.kwargs)
-        if self.archetype==EffectType.PeakValueModifier:
-            target.ModActorPeakValue(avtype=self.associatedItem,value=self.value,**self.kwargs)
 
         if self.rest_duration>0:#施加buff列表
             self.active=True
             self.target.buff_effectlist.append(self)
 
+        #event trigger 
+        if self.trigger_on_apply:
+            add_listener("OnEffectStart",self.Enforce  )
+        if self.trigger_on_turn_start:
+            add_listener("OnTurnStart",  self.Enforce  )
+        if self.recover_on_remove:
+            add_listener("OnEffectEnd", self.Recover  )
+        event_oneffectstart(caster=caster,target=target,effect=self)
+
+    def Refresh(self):
+        """刷新魔法效果"""
+        self.rest_duration=self.duration
+    
     def Elapse(self):
         """时间流逝，减少持续时间"""
         self.rest_duration-=1
         if self.rest_duration<=0:
-            self.Dispel()
-    def Dispel(self,):
+            self.Dispell()
+    def Dispell(self,):
         """驱散魔法效果"""
         for eff in self.target.buff_effectlist:
             if eff == self:
                 self.target.buff_effectlist.remove(eff)
                 #删除效果
         self.active=False
+        self.caster=None
+        self.target=None
+        self.rest_duration=0
+        event_oneffectend(caster=self.caster,target=self.target,effect=self)
+
+
+    def Enforce(self):  
+        """魔法效果生效"""
+        if self.archetype==EffectType.ValueModifier:
+            self.target.ModActorValue(avtype=self.associatedItem,value=self.value,**self.kwargs)
+        if self.archetype==EffectType.PeakValueModifier:
+            self.target.ModActorPeakValue(avtype=self.associatedItem,value=self.value,**self.kwargs)
+
+    def Recover(self):
+        """恢复数值"""
         if self.archetype==EffectType.ValueModifier:
             self.target.ModActorValue(avtype=self.associatedItem,value=-self.value,**self.kwargs)
         if self.archetype==EffectType.PeakValueModifier:
             self.target.ModActorPeakValue(avtype=self.associatedItem,value=-self.value,**self.kwargs)
-        """取消注册事件监听器"""
-        remove_listener("OnEffectStart", self.Apply)
-        remove_listener("OnEffectEnd", self.Dispel)
-# class Effect(Effect):
-#     """魔法效果基础类，表示一个魔法效果的基础属性"""
-#     def __init__(self,**kwargs) -> None:
-#         super().__init__(**kwargs)
-
-# 全局事件总线（注册/取消/触发）
-_event_listeners = {}
-
-def add_listener(event_name, func):
-    """注册事件监听器：add_listener('OnEffectStart', handler)"""
-    _event_listeners.setdefault(event_name, []).append(func)
-
-def remove_listener(event_name, func):
-    """取消注册事件监听器"""
-    if event_name in _event_listeners and func in _event_listeners[event_name]:
-        _event_listeners[event_name].remove(func)
-
-def dispatch_event(event_name, **kwargs):
-    """创建 Event 并调用所有监听器（异常会被捕获并打印）"""
-    ev = Event(name=event_name, **kwargs)
-    for fn in list(_event_listeners.get(event_name, [])):
-        try:
-            fn(ev)
-        except Exception as e:
-            print("Event handler error:", e)
-
-
-def on_effect_start_burn(ev):
-    # print("触发效果开始事件:", ev.name)
-    eff = ev.kwargs.get("effect")
-    # print("效果名称:", eff.name)
-    if eff  and eff.name == "火印":   # 根据效果名或 id 判定
-        caster = ev.kwargs.get("caster")
-        target = ev.kwargs.get("target")
-        # 创建并应用一个瞬时伤害效果
-        burn = Effect(name="灼烧", magnitude=20, duration=3, archetype=EffectType.ValueModifier, associatedItem=ActorValueType.health)
-        burn.Apply(caster, target)
-        print(f"{target.name} 被 {caster.name} 施加了灼烧效果！")
-# add_listener("OnEffectStart", on_effect_start_burn)
-def event_record_damage(amount, source, target, damagetype, state):
-    """发布伤害事件（封装现有调用点）"""
-    dispatch_event("OnDamage", amount=amount, source=source, target=target, damagetype=damagetype, state=state)
-
-def event_oneffectstart(caster, target, effect):
-    """发布效果开始事件：监听器接收参数 (caster, target, effect) 在 ev.kwargs 中。"""
-    dispatch_event("OnEffectStart", caster=caster, target=target, effect=effect)
-def event_oneffectend(caster, target, effect):
-    """发布效果结束事件：监听器接收参数 (caster, target, effect) 在 ev.kwargs 中。"""
-    dispatch_event("OnEffectEnd", caster=caster, target=target, effect=effect)
 
 def loadskill(dic):
     rtv=[]
@@ -1675,13 +1699,104 @@ def postset_bat():
     for actorbase in global_MonsterBaseList:
         actorbase.deal_skillList()
 
+
+
+
+
+
+# 全局事件总线（注册/取消/触发）
+class GlobalItemList(list):
+    def showitems(self,maxnumber=10):
+        for item in self[:maxnumber]:
+            print(item.name)
+
+#custom dictionary class
+class EventListenerDict(dict):
+    def __setitem__(self, key, value):
+        if key not in self:
+            super().__setitem__(key, [])
+        self[key].append(value)
+class GlobalEventBus:
+    def __init__(self):
+        self.listeners = EventListenerDict()
+global_event_listeners =  EventListenerDict()
+
+def add_listener(event_name, func):
+    """注册事件监听器：add_listener('OnEffectStart', handler)"""
+    global_event_listeners.setdefault(event_name, []).append(func)
+
+def remove_listener(event_name, func):
+    """取消注册事件监听器"""
+    if event_name in global_event_listeners and func in global_event_listeners[event_name]:
+        global_event_listeners[event_name].remove(func)
+
+def dispatch_event(event_name, **kwargs):#"OnAttack"
+    """创建 Event 并调用所有监听器（异常会被捕获并打印）"""
+    ev = Event(name=event_name, **kwargs)
+    for fn in list(global_event_listeners.get(event_name, [])):
+        try:
+            if type(fn) == type(lambda:0):
+                fn(ev)
+            elif hasattr(fn, '__call__'):
+                fn(ev)
+            elif isinstance(fn, Effect):
+                fn.Apply(ev.kwargs.get("caster"), ev.kwargs.get("target"))
+        except Exception as e:
+            print("Event handler error:", e)
+
+
+def on_effect_start_burn(ev):
+    # print("触发效果开始事件:", ev.name)
+    eff = ev.kwargs.get("effect")
+    # print("效果名称:", eff.name)
+    if eff  and eff.name == "火印":   # 根据效果名或 id 判定
+        caster = ev.kwargs.get("caster")
+        target = ev.kwargs.get("target")
+        # 创建并应用一个瞬时伤害效果
+        burn = Effect(name="灼烧", magnitude=20, duration=3, archetype=EffectType.ValueModifier, associatedItem=ActorValueType.health)
+        burn.Apply(caster, target)
+        print(f"{target.name} 被 {caster.name} 施加了灼烧效果！")
+# add_listener("OnEffectStart", on_effect_start_burn)
+def event_record_damage(amount, source, target, damagetype, state):
+    """发布伤害事件（封装现有调用点）"""
+    dispatch_event("OnDamage", amount=amount, source=source, target=target, damagetype=damagetype, state=state)
+
+def event_oneffectstart(caster, target, effect):
+    """发布效果开始事件：监听器接收参数 (caster, target, effect) 在 ev.kwargs 中。"""
+    dispatch_event("OnEffectStart", caster=caster, target=target, effect=effect)
+def event_oneffectend(caster, target, effect):
+    """发布效果结束事件：监听器接收参数 (caster, target, effect) 在 ev.kwargs 中。"""
+    dispatch_event("OnEffectEnd", caster=caster, target=target, effect=effect)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 empty_magic_effect=Effect(name="空效果",magnitude=0,duration=0,archetype=EffectType.Empty)
 # empty_magic_effect=Effect("empty_magic_effect")
 empty_buff=Effect("empty_buff",magnitude=1,duration=1)
-global_SkillList=[Skill()]
-global_EffectList=[empty_magic_effect]
+
 Justin=Actor(name="贾斯汀",health=ActorValue(currentvalue=150,maxvalue=1000),mana=ActorValue(currentvalue=4,maxvalue=100),level=6,attack=75,defence=63,armor=5,atkrate=100,avoid=0,block=0,healthregen=4)
-global_MonsterBaseList=[copy.deepcopy(Justin)]
+
+# global_SkillList=[Skill()]
+# global_EffectList=[empty_magic_effect]
+# global_MonsterBaseList=[copy.deepcopy(Justin)]
+global_SkillList=GlobalItemList()
+global_EffectList=GlobalItemList()
+global_MonsterBaseList=GlobalItemList()
+global_SkillList.append(Skill())
+global_EffectList.append(empty_magic_effect)
+global_MonsterBaseList.append(copy.deepcopy(Justin))
 #加载 魔法效果
 dat_effect = pandas.read_csv("./csv/Effects.csv",  header=0)
 for i in range(len(dat_effect)):
