@@ -406,6 +406,8 @@ class Battle():
         for i in self.order:
             for actor in self.Groups[i].members:
                 actor.in_battle=self
+                actor.check_passive_skills_selfbuff()
+
 
         for r in range(1,global_max_rounds):
             self.Start_OneTurn(r)
@@ -421,12 +423,13 @@ class Battle():
         for i in self.order:
             for actor in self.Groups[i].members:
                 actor.End_Battle()
-    def Start_OneTurn(self,r=1):
+    def Start_OneTurn(self, round_index=1):
+        event_onturnstart(round_index)
         """开始一轮战斗"""
         if flag_input_in_battle:
             self.Groups[0].Show_Members(flag_showstate=True)
             self.Groups[1].Show_Members(flag_showstate=True)
-            input("回合 %d 开始，按回车继续..." %r)
+            input("回合 %d 开始，按回车继续..." %round_index)
         #没有被沉默？
         # self.attack_once(other)
         #反击？
@@ -449,6 +452,9 @@ class Battle():
                 enemy_target= enemy_group.members[enemy_group.Frontier()] 
                     
                 if actor.Is_Alive() and enemy_target.Is_Alive():    
+                    if actor.Is_Stunned():
+                        if flag_showinfo_attack: print(strcat(actor.name,"被眩晕，无法行动"))
+                        continue
                     #技能
                     returnInfo={}
                     if not (actor.Has_EffectType(EffectType.Mute )or actor.Has_EffectType(EffectType.Stun )):
@@ -457,7 +463,8 @@ class Battle():
 
                     if not ("noattack" in returnInfo)  :
                     #普攻
-                        actor.cast_attack(enemy_target,state={"round":r,"environment":[]})
+                        actor.check_passive_skills_onattack(enemy_target)
+                        actor.cast_attack(enemy_target,state={"round":round_index,"environment":[]})
         self.natural_regenerate()
         # other.natural_regenerate()
 #技能 普通攻击， 对方回合……回复
@@ -705,6 +712,27 @@ class Actor():
         self.skilllist_obj=skillList
         self.active_spelllist=[term for term in self.skilllist_obj if term.skilltype==SkillType.Active]
         self.passive_skilllist=[term for term in self.skilllist_obj if term.skilltype==SkillType.Passive]
+    def check_passive_skills_selfbuff(self):
+        """检查并触发被动技能效果"""
+
+        for skill in self.passive_skilllist:
+            if skill.skilltype==SkillType.Passive and skill.delivery==DeliveryType.Self:
+                for effect in skill.effect_list:
+                    effect.cast_spell(self,target=self)
+
+    def check_passive_skills_onattack(self ,targ):
+        """检查并触发被动技能效果"""
+        for skill in self.passive_skilllist:
+            if  skill.skilltype==SkillType.Passive and skill.delivery==DeliveryType.Contact:
+                
+                add_listener("OnRecordDamage", self.cast_spell )
+    # def check_passive_skills_onattack(self,targ):
+        # SkillType.Passive and DeliveryType.Contact   record_damage 监听
+        #se
+        # #检查self被动技能列表
+        # for skill in self.passive_skilllist:
+        #     #cast_spell
+        #         self.cast_spell(skill,target=targ)
 # class Actor(Actor):
 #     def __str__(self):
 #         return "ActorBase:"+str(self.name)
@@ -736,13 +764,10 @@ def Apply_Damage(targ : Actor,damage=0,flag_aftertex=False,self=None  ,damagetyp
     else:
         v=v
     event_record_damage(v,self,targ,damagetype,state)
-    if True:#test
+    # if True:#test
         # if not targ.Has_EffectType(EffectType.ValueModifier) :
             # add_listener("OnEffectStart", on_effect_start_burn)
-        #检查self被动技能列表
-        for skill in self.passive_skilllist:
-            #cast_spell
-                self.cast_spell(skill,target=targ)
+
         # dispatch_event("OnEffectStart")#, effect=Effect(name="火印",magnitude=1000,duration=3,archetype=EffectType.ValueModifier,associatedItem=ActorValueType.health), caster=self, target=targ)   
     #
     targ.ModActorValue(avtype=ActorValueType.health,value=-v)
@@ -1759,7 +1784,7 @@ def on_effect_start_burn(ev):
 # add_listener("OnEffectStart", on_effect_start_burn)
 def event_record_damage(amount, source, target, damagetype, state):
     """发布伤害事件（封装现有调用点）"""
-    dispatch_event("OnDamage", amount=amount, source=source, target=target, damagetype=damagetype, state=state)
+    dispatch_event("OnRecordDamage", amount=amount, source=source, target=target, damagetype=damagetype, state=state)
 
 def event_oneffectstart(caster, target, effect):
     """发布效果开始事件：监听器接收参数 (caster, target, effect) 在 ev.kwargs 中。"""
@@ -1767,7 +1792,8 @@ def event_oneffectstart(caster, target, effect):
 def event_oneffectend(caster, target, effect):
     """发布效果结束事件：监听器接收参数 (caster, target, effect) 在 ev.kwargs 中。"""
     dispatch_event("OnEffectEnd", caster=caster, target=target, effect=effect)
-
+def event_onturnstart(turn_index): #"OnTurnStart"
+    dispatch_event("OnTurnStart", turn_index=turn_index)
 
 
 
