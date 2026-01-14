@@ -10,6 +10,7 @@ global_armorconst=0.06
 flag_showinfo_attack=True
 flag_showinfo_regen=True
 flag_input_in_battle=True
+flag_debuglog=True
 global_levelname=["_","下级佣兵","中级佣兵","高级佣兵","特级佣兵","王牌佣兵", #5
     "荣耀佣兵","辉煌佣兵","准职业者","黑铁职业者","青铜职业者",#10
     "白银职业者","黄金职业者","蓝玉职业者","紫晶职业者","半步英雄",
@@ -120,6 +121,9 @@ class EffectType(Enum):# archetype仅仅简化，实际上从根本上允许脚�
     ManaBurn =auto()
     Ethereal =auto()
     Absorb=auto()
+
+
+
 class StrategyEffectType(Enum):
     """策略效果类型枚举"""
     Aura= auto()
@@ -406,7 +410,8 @@ class Battle():
         for i in self.order:
             for actor in self.Groups[i].members:
                 actor.in_battle=self
-                actor.check_passive_skills_selfbuff()
+                # actor.check_passive_skills_selfbuff()
+                actor.check_passive_skills_onattack( )
 
 
         for r in range(1,global_max_rounds):
@@ -424,6 +429,7 @@ class Battle():
             for actor in self.Groups[i].members:
                 actor.End_Battle()
     def Start_OneTurn(self, round_index=1):
+        if flag_debuglog:print("开始回合:", round_index)
         event_onturnstart(round_index)
         """开始一轮战斗"""
         if flag_input_in_battle:
@@ -463,9 +469,10 @@ class Battle():
 
                     if not ("noattack" in returnInfo)  :
                     #普攻
-                        actor.check_passive_skills_onattack(enemy_target)
+                        
                         actor.cast_attack(enemy_target,state={"round":round_index,"environment":[]})
         self.natural_regenerate()
+        event_onturnend(round_index)
         # other.natural_regenerate()
 #技能 普通攻击， 对方回合……回复
     def natural_regenerate(self):
@@ -558,6 +565,7 @@ class Actor():
         return bool(self.parent_group == targ.parent_group)
     def cast_spell(self,spell:Skill,target=None):#  发动技能效果  
         """施放技能"""
+        if flag_debuglog: print(strcat(self.name,"施放技能",spell.name))
         # assert spell.skilltype==SkillType.Active
         if target is None:
             if spell.delivery==DeliveryType.Self:
@@ -651,19 +659,19 @@ class Actor():
                 print("warning: buff is None",self.name)
             else:
                 if buff.dispell_after_battle:
-                    buff.Dispell(self)
+                    buff.Dispell()
                 else:
                     print("保留buff:",buff.name,self.name)
     def instantiate(self):
         """实例化角色，返回一个新的角色对象"""
         aaa= copy.deepcopy(self)  
-        aaa.__class__=ActorRef
+        # aaa.__class__=ActorRef
         return aaa
-    def ModActorValue(self,avtype:ActorValueType,value ,maxbound=True,zerobound=False): 
+    def ModActorValue(self,avtype:ActorValueType,value ,maxbound=True,zerobound=False,**kwargs): 
         """修改角色属性值"""
         if isinstance(avtype,ActorValueType):avtype=avtype.name
         return self.__dict__[avtype].ModValue(value=value ,maxbound=maxbound,zerobound=zerobound)
-    def ModActorPeakValue(self,avtype:ActorValueType,value,flag_proportion=False,flag_clipup=True): 
+    def ModActorPeakValue(self,avtype:ActorValueType,value,flag_proportion=False,flag_clipup=True,**kwargs): 
         """修改角色属性峰值"""
         if isinstance(avtype,ActorValueType):avtype=avtype.name
         self.__dict__[avtype].ModPeakValue(value=value ,flag_proportion=flag_proportion,flag_clipup=flag_clipup)
@@ -720,12 +728,14 @@ class Actor():
                 for effect in skill.effect_list:
                     effect.cast_spell(self,target=self)
 
-    def check_passive_skills_onattack(self ,targ):
+    def check_passive_skills_onattack(self  ):##       【记得取消注册】
         """检查并触发被动技能效果"""
         for skill in self.passive_skilllist:
             if  skill.skilltype==SkillType.Passive and skill.delivery==DeliveryType.Contact:
-                
-                add_listener("OnRecordDamage", self.cast_spell )
+                listener=Listener(event_name="OnRecordDamage", callback=self.cast_spell,
+                    condition_kwargs={"source":self},#, "target":targ
+                                  spell=skill,target=EvtKwarg("target") )
+                add_listener("OnRecordDamage",  listener)
     # def check_passive_skills_onattack(self,targ):
         # SkillType.Passive and DeliveryType.Contact   record_damage 监听
         #se
@@ -740,14 +750,28 @@ class Actor():
 #     def __init__(self,**kwargs) -> None:
 #         super().__init__(**kwargs)
 
-class ActorRef(Actor):
-    test=0
+#事件系统: 事件-条件-动作
 class Event():
     """事件类，表示一个游戏事件"""
+    ##
     def __init__(self,name="",**kwargs):
         self.name=name
         self.kwargs=kwargs
-
+    def __str__(self):
+        return "事件:"+str(self.name)
+class Listener():
+    """监听器类，表示一个事件监听器"""
+    def __init__(self,event_name="",callback=None,condition_kwargs=None,**kwargs):
+        self.event_name=event_name
+        self.callback=callback
+        self.condition_kwargs=condition_kwargs
+        self.kwargs=kwargs
+class EventRespond(Enum):
+    Empty=0
+class EvtKwarg():
+    """事件关键字参数类，表示一个事件的关键字参数"""
+    def __init__(self,keyname ):
+        self.keyname=keyname
 
 def Apply_Damage(targ : Actor,damage=0,flag_aftertex=False,self=None  ,damagetype=DamageType.Physical
         ,state={"round":1,"environment":[]},flag_rounds=True ):
@@ -835,6 +859,8 @@ class Effect():
         self.trigger_on_apply = DefaultValue_If_None(trigger_on_apply, True )
         self.trigger_on_turn_start = DefaultValue_If_None(trigger_on_turn_start, maybe_damage_heal )
         self.recover_on_remove = DefaultValue_If_None(recover_on_remove, not maybe_damage_heal )
+
+        self.related_listener=[]#注册的监听器列表
     def showinfo(self):
         print(f"效果名称: {self.name}")
         print(f"效果类型: {self.archetype}")
@@ -851,7 +877,21 @@ class Effect():
         self.target=target
         self.rest_duration=self.duration
         self.value=self.resist( self.magnitude,caster,target)
-    
+        #check self.max_stack
+        if target.Has_EffectId(self.baseID):
+            #找到已有效果
+            # for eff in target.buff_effectlist:
+            sublist=[eff for eff in target.buff_effectlist if eff.baseID == self.baseID]
+            # if eff.baseID == self.baseID:
+                #检查数量，如果不足max_stack则添加一个，如果满了则刷新持续时间
+            if len(sublist)<self.max_stack:
+                #添加一个新的效果，走后面的逻辑
+                pass
+            else:#刷新第一个的持续时间！！！！！！！！！！！！！！！！！！！【仅供测试 不合理！！！！！】
+                for eff in sublist:
+                    eff.Refresh()
+                    return
+
 
         if self.rest_duration>0:#施加buff列表
             self.active=True
@@ -859,11 +899,27 @@ class Effect():
 
         #event trigger 
         if self.trigger_on_apply:
-            add_listener("OnEffectStart",self.Enforce  )
+            listener=Listener(event_name="OnEffectStart", callback=self.Enforce, #写法1
+                                                   condition_kwargs={"caster":caster, "target":target},
+                                                   caster=caster,target=target,effect=self) 
+            add_listener("OnEffectStart",  listener)
+            self.related_listener.append(listener)
         if self.trigger_on_turn_start:
-            add_listener("OnTurnStart",  self.Enforce  )
+            listener=Listener(event_name="OnTurnStart", callback=Effect.Enforce, #写法2
+                                                   condition_kwargs=None)
+            listener.kwargs =dict( self=self ,caster=caster,target=target,effect=self)
+            add_listener("OnTurnStart",   listener  )
+            self.related_listener.append(listener)
+        if True:#turn end ？ 
+            listener=Listener(event_name="OnTurnEnd", callback=self.Elapse, 
+                                                   condition_kwargs=None)
+            # listener.kwargs =dict( self=self )
+            add_listener("OnTurnEnd",   listener  )
+            self.related_listener.append(listener)
         if self.recover_on_remove:
-            add_listener("OnEffectEnd", self.Recover  )
+            listener=Listener(event_name="OnEffectEnd", callback=self.Recover ,caster=caster,target=target,effect=self)
+            add_listener("OnEffectEnd",  listener)
+            self.related_listener.append(listener)
         event_oneffectstart(caster=caster,target=target,effect=self)
 
     def Refresh(self):
@@ -874,33 +930,35 @@ class Effect():
         """时间流逝，减少持续时间"""
         self.rest_duration-=1
         if self.rest_duration<=0:
+            if flag_debuglog: print("效果持续时间结束，驱散效果:",self.name)
             self.Dispell()
-    def Dispell(self,):
+    def Dispell(self,**kwargs):
         """驱散魔法效果"""
         for eff in self.target.buff_effectlist:
             if eff == self:
                 self.target.buff_effectlist.remove(eff)
                 #删除效果
         self.active=False
-        self.caster=None
-        self.target=None
+        # self.caster=None
+        # self.target=None
         self.rest_duration=0
         event_oneffectend(caster=self.caster,target=self.target,effect=self)
+        for listener in self.related_listener:
+            remove_all_related_listeners(listener)
 
-
-    def Enforce(self):  
+    def Enforce(self,**kwargs):  
         """魔法效果生效"""
         if self.archetype==EffectType.ValueModifier:
-            self.target.ModActorValue(avtype=self.associatedItem,value=self.value,**self.kwargs)
+            self.target.ModActorValue(avtype=self.associatedItem,value=self.value,** kwargs)
         if self.archetype==EffectType.PeakValueModifier:
-            self.target.ModActorPeakValue(avtype=self.associatedItem,value=self.value,**self.kwargs)
+            self.target.ModActorPeakValue(avtype=self.associatedItem,value=self.value,** kwargs)
 
-    def Recover(self):
+    def Recover(self,**kwargs):
         """恢复数值"""
         if self.archetype==EffectType.ValueModifier:
-            self.target.ModActorValue(avtype=self.associatedItem,value=-self.value,**self.kwargs)
+            self.target.ModActorValue(avtype=self.associatedItem,value=-self.value,** kwargs)
         if self.archetype==EffectType.PeakValueModifier:
-            self.target.ModActorPeakValue(avtype=self.associatedItem,value=-self.value,**self.kwargs)
+            self.target.ModActorPeakValue(avtype=self.associatedItem,value=-self.value,** kwargs)
 
 def loadskill(dic):
     rtv=[]
@@ -1746,28 +1804,45 @@ class GlobalEventBus:
         self.listeners = EventListenerDict()
 global_event_listeners =  EventListenerDict()
 
-def add_listener(event_name, func):
+def add_listener(event_name,   listener):#**kwargs_listener):
     """注册事件监听器：add_listener('OnEffectStart', handler)"""
-    global_event_listeners.setdefault(event_name, []).append(func)
+    global_event_listeners.setdefault(event_name, []).append(listener)
 
-def remove_listener(event_name, func):
+
+def remove_all_related_listeners(listener):
     """取消注册事件监听器"""
-    if event_name in global_event_listeners and func in global_event_listeners[event_name]:
-        global_event_listeners[event_name].remove(func)
+    for event_name in list(global_event_listeners.keys()): 
+        if listener in global_event_listeners[event_name]:
+            global_event_listeners[event_name].remove(listener)
+
 
 def dispatch_event(event_name, **kwargs):#"OnAttack"
     """创建 Event 并调用所有监听器（异常会被捕获并打印）"""
     ev = Event(name=event_name, **kwargs)
-    for fn in list(global_event_listeners.get(event_name, [])):
-        try:
-            if type(fn) == type(lambda:0):
-                fn(ev)
-            elif hasattr(fn, '__call__'):
-                fn(ev)
-            elif isinstance(fn, Effect):
-                fn.Apply(ev.kwargs.get("caster"), ev.kwargs.get("target"))
-        except Exception as e:
-            print("Event handler error:", e)
+    for listener in list(global_event_listeners.get(event_name, [])):
+        # check conditions in listener.condition_kwargs
+        conditions_met = True
+        if listener.condition_kwargs:
+            for key, value in listener.condition_kwargs.items():
+                if ev.kwargs.get(key) != value:#条件判断
+                    conditions_met = False
+                    break
+        if conditions_met:
+            # listener.kwargs  updated with ev.kwargs if type==EvtKwarg
+            updated_kwargs = listener.kwargs.copy()
+            for k, v in listener.kwargs.items():
+                if isinstance(v, EvtKwarg):
+                    updated_kwargs[k] = ev.kwargs.get(v.keyname)
+            listener.callback(**updated_kwargs)
+        # try:
+            # if type(fn) == type(lambda:0):
+            #     fn(ev)
+            # elif hasattr(fn, '__call__'):
+            #     fn(ev)
+            # elif isinstance(fn, Effect):
+            #     fn.Apply(ev.kwargs.get("caster"), ev.kwargs.get("target"))
+        # except Exception as e:
+        #     print("Event handler error:", e)
 
 
 def on_effect_start_burn(ev):
@@ -1794,7 +1869,8 @@ def event_oneffectend(caster, target, effect):
     dispatch_event("OnEffectEnd", caster=caster, target=target, effect=effect)
 def event_onturnstart(turn_index): #"OnTurnStart"
     dispatch_event("OnTurnStart", turn_index=turn_index)
-
+def event_onturnend(turn_index): #"OnTurnEnd"
+    dispatch_event("OnTurnEnd", turn_index=turn_index)
 
 
 
