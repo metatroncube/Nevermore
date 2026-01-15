@@ -419,7 +419,7 @@ class Battle():
             if self. winner is not None:
                 print("阵营胜利",self.winner,self.Groups[self.winner].Show_Members())
                 break
-            if r>global_max_rounds_test:            break
+            if r>=global_max_rounds_test:            break
         self.End_Battle()
 
 
@@ -523,6 +523,8 @@ class Actor():
         self.summon=[]
         self.buff_effectlist=[]#魔法效果
 
+        self.related_listener=[]#注册的监听器列表
+
     def chance_reset(self):
         self.cast_chance=1#可以施法几次
         self.attack_chance=1#可以攻击几次  
@@ -584,7 +586,8 @@ class Actor():
         targets=To_List(target)
         for effect in  spell.effect_list:
             for targ_ in targets:
-                effect.Apply(self,targ_)
+                effect_copy=copy.deepcopy(effect)
+                effect_copy.Apply(self,targ_)
     def get_current_spell(self) -> Skill: 
         """获取当前施放的技能"""
         if len(self.active_spelllist)>0:
@@ -594,7 +597,7 @@ class Actor():
             return self.active_spelllist[0]
         return None
     def cast_once(self):
-        """施放一次技能"""
+        """施放一次主动技能"""
         spell=self.get_current_spell()
         if spell is not None:
             spell.ammunition.ModValue(-1,zerobound=True) #消耗弹药
@@ -720,7 +723,7 @@ class Actor():
         self.skilllist_obj=skillList
         self.active_spelllist=[term for term in self.skilllist_obj if term.skilltype==SkillType.Active]
         self.passive_skilllist=[term for term in self.skilllist_obj if term.skilltype==SkillType.Passive]
-    def check_passive_skills_selfbuff(self):
+    def check_passive_skills_selfbuff(self):##       【记得注意注册时机、状态刷新、和取消注册！！】
         """检查并触发被动技能效果"""
 
         for skill in self.passive_skilllist:
@@ -728,7 +731,7 @@ class Actor():
                 for effect in skill.effect_list:
                     effect.cast_spell(self,target=self)
 
-    def check_passive_skills_onattack(self  ):##       【记得取消注册】
+    def check_passive_skills_onattack(self  ):##       【记得注意注册时机、状态刷新、和取消注册！！】
         """检查并触发被动技能效果"""
         for skill in self.passive_skilllist:
             if  skill.skilltype==SkillType.Passive and skill.delivery==DeliveryType.Contact:
@@ -736,6 +739,20 @@ class Actor():
                     condition_kwargs={"source":self},#, "target":targ
                                   spell=skill,target=EvtKwarg("target") )
                 add_listener("OnRecordDamage",  listener)
+                self.related_listener.append(listener)
+    def __del__(self):#析构函数
+        """删除角色，取消注册所有监听器，将自身化为None"""
+        #删除全部魔法效果、状态效果
+        for effect in self.buff_effectlist:
+            effect.Dispell()
+        for listener in self.related_listener:
+            remove_all_related_listeners(  listener)
+        self.related_listener=[]
+        #Noneify
+        del self
+
+
+        
     # def check_passive_skills_onattack(self,targ):
         # SkillType.Passive and DeliveryType.Contact   record_damage 监听
         #se
@@ -819,8 +836,7 @@ def cal_poison_damage(v,self : Actor,targ : Actor,state={"round":1,"environment"
 def cal_custom_damage(v,self : Actor,targ : Actor,state={"round":1,"environment":[]}):
     return v
 class Effect():
-    # trigger_on_apply: bool = True#增益减益True  中毒治疗True 
-    # recover_on_remove: bool = False#增益减益True  中毒治疗False
+
     def __str__(self):
         return "效果:"+str(self.name)
     """魔法效果类，表示一个魔法效果"""
@@ -887,7 +903,7 @@ class Effect():
             if len(sublist)<self.max_stack:
                 #添加一个新的效果，走后面的逻辑
                 pass
-            else:#刷新第一个的持续时间！！！！！！！！！！！！！！！！！！！【仅供测试 不合理！！！！！】
+            else:#刷新第一个的持续时间！！【注意仅供测试 不合理！！】
                 for eff in sublist:
                     eff.Refresh()
                     return
