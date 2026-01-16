@@ -7,10 +7,12 @@ import functools
 global_max_rounds=999
 global_max_rounds_test=5
 global_armorconst=0.06
+INF=float('inf')
+global_observer_list=[]
 flag_showinfo_attack=True
 flag_showinfo_regen=True
 flag_input_in_battle=True
-flag_debuglog=True
+flag_debuglog=3
 global_levelname=["_","下级佣兵","中级佣兵","高级佣兵","特级佣兵","王牌佣兵", #5
     "荣耀佣兵","辉煌佣兵","准职业者","黑铁职业者","青铜职业者",#10
     "白银职业者","黄金职业者","蓝玉职业者","紫晶职业者","半步英雄",
@@ -201,9 +203,10 @@ class ActorValue():
             raise AttributeError  # http://nedbatchelder.com/blog/201010/surprising_getattr_recursion.html
         name = self.aliases.get(name, name)
         return object.__getattribute__(self, name)
-    def ModValue(self,value,maxbound=True,zerobound=False ):    
+    def ModValue(self,value,maxbound=None,zerobound=False ):    
         value_final=self.currentvalue+value
         # print(value_final,self.maxvalue)
+        maxbound=DefaultValue_If_None(maxbound,True if self.AV_Type in [ActorValueType.health,ActorValueType.mana,ActorValueType.amount] else False)
         value_final=_clip(value_final,max_=self.maxvalue if maxbound else None,min_=0 if zerobound else None)
 
         self.currentvalue=value_final
@@ -296,6 +299,16 @@ class Skill():
             effect=get_global_effect("腐蚀毒素",copyflag=True)
             effect.magnitude= -float(skillbase.parameters[0]) if skillbase.parameters else -10
             skillbase.effect_list.append(effect)
+        if skillbase.name=="闪避":
+            self.skilltype=SkillType.Passive
+            self.delivery=DeliveryType.Self
+            #闪避
+            effect=get_global_effect("闪避",copyflag=True)
+            effect.magnitude= float(skillbase.parameters[0]) if skillbase.parameters else 10
+            effect.magnitude= avoid_convert(effect.magnitude,reverse=False)
+            effect.dispell_onstatechange=True
+            effect.dispell_after_battle=False 
+            skillbase.effect_list.append(effect)
         return skillbase.effect_list
 
 #[自身攻击-目标防御]*我方攻速系数*目标护甲减伤*目标闪避减伤*暴击
@@ -321,10 +334,18 @@ def factor_armor(armor):#护甲减伤
         return 1/(1+global_armorconst*armor)
     else:
         return (1+global_armorconst*abs(armor))
-def factor_avoid(avoid):#闪避
+def factor_avoid(avoid,converted=True):#闪避
     """计算闪避减伤"""
+    #命中率叠加因子：log(1-闪避率/100)
     avoid=getvalue(avoid)
-    return  _clip(1-avoid/100  , min_=0,max_=1)
+    # return  _clip(1-avoid/100  , min_=0,max_=1)
+    return  _clip(np.exp( avoid/-100)  , min_=0,max_=1) if converted else  _clip(1-avoid/100  , min_=0,max_=1)
+def avoid_convert(avoid,reverse=True):
+    if reverse:
+        # return (1 - np.exp(avoid)) * 100
+        return (1 - np.exp(avoid/-100)) * 100
+    else:
+        return -100*np.log(1-avoid/100)
 def factor_magicresist(resist):#闪避
     """计算魔法抗性减伤"""
     resist=getvalue(resist)
@@ -407,11 +428,12 @@ class Battle():
         #先手判定 
         #召唤判定
         #支援判定
+        event_onbattlestart(self)
         for i in self.order:
             for actor in self.Groups[i].members:
                 actor.in_battle=self
                 # actor.check_passive_skills_selfbuff()
-                actor.check_passive_skills_onattack( )
+                # actor.check_passive_skills_onattack( )
 
 
         for r in range(1,global_max_rounds):
@@ -425,6 +447,7 @@ class Battle():
 
 
     def End_Battle(self):
+        event_onbattleend(self)
         for i in self.order:
             for actor in self.Groups[i].members:
                 actor.End_Battle()
@@ -559,7 +582,7 @@ class Actor():
             print(self.name, strcat("生命:",getvalue(self.health)),strcat("魔法:",getvalue(self.mana)),strcat("攻击:",getvalue(self.attack)),strcat("防御:",getvalue(self.defence)),)
         if full:
             for k,v in self.__dict__.items():
-                if k not in ['health','mana','name']:
+                if k not in ['health','mana','name','related_listener','in_battle','parent_group','faction','skilllist','skilllist_obj','active_spelllist','passive_skilllist', 'summon']:
                     print(k,'=',getvalue(v),end=', ')
             print()
     def Is_SameGroup(self,targ):
@@ -567,7 +590,7 @@ class Actor():
         return bool(self.parent_group == targ.parent_group)
     def cast_spell(self,spell:Skill,target=None):#  发动技能效果  
         """施放技能"""
-        if flag_debuglog: print(strcat(self.name,"施放技能",spell.name))
+        if flag_debuglog>=5: print(strcat(self.name,"施放技能",spell.name))
         # assert spell.skilltype==SkillType.Active
         if target is None:
             if spell.delivery==DeliveryType.Self:
@@ -588,6 +611,7 @@ class Actor():
             for targ_ in targets:
                 effect_copy=copy.deepcopy(effect)
                 effect_copy.Apply(self,targ_)
+                global_observer_list.append( effect_copy)#注册观察者
     def get_current_spell(self) -> Skill: 
         """获取当前施放的技能"""
         if len(self.active_spelllist)>0:
@@ -723,13 +747,21 @@ class Actor():
         self.skilllist_obj=skillList
         self.active_spelllist=[term for term in self.skilllist_obj if term.skilltype==SkillType.Active]
         self.passive_skilllist=[term for term in self.skilllist_obj if term.skilltype==SkillType.Passive]
+    def check_passive_skills(self):
+        """检查并触发被动技能效果"""
+        for listener in self.related_listener:
+            remove_all_related_listeners(  listener)
+        self.related_listener=[]#清空监听器列表，重新注册
+        self.check_passive_skills_selfbuff()
+        self.check_passive_skills_onattack( )
     def check_passive_skills_selfbuff(self):##       【记得注意注册时机、状态刷新、和取消注册！！】
         """检查并触发被动技能效果"""
-
+        dispatch_event("OnActorStateChange", actor=self, reason="recheck")
         for skill in self.passive_skilllist:
             if skill.skilltype==SkillType.Passive and skill.delivery==DeliveryType.Self:
                 for effect in skill.effect_list:
-                    effect.cast_spell(self,target=self)
+                    effect_copy=copy.deepcopy(effect)
+                    effect_copy.Apply(self,self)
 
     def check_passive_skills_onattack(self  ):##       【记得注意注册时机、状态刷新、和取消注册！！】
         """检查并触发被动技能效果"""
@@ -752,20 +784,6 @@ class Actor():
         del self
 
 
-        
-    # def check_passive_skills_onattack(self,targ):
-        # SkillType.Passive and DeliveryType.Contact   record_damage 监听
-        #se
-        # #检查self被动技能列表
-        # for skill in self.passive_skilllist:
-        #     #cast_spell
-        #         self.cast_spell(skill,target=targ)
-# class Actor(Actor):
-#     def __str__(self):
-#         return "ActorBase:"+str(self.name)
-#     """角色基础类，表示一个角色的基础属性"""
-#     def __init__(self,**kwargs) -> None:
-#         super().__init__(**kwargs)
 
 #事件系统: 事件-条件-动作
 class Event():
@@ -805,12 +823,7 @@ def Apply_Damage(targ : Actor,damage=0,flag_aftertex=False,self=None  ,damagetyp
     else:
         v=v
     event_record_damage(v,self,targ,damagetype,state)
-    # if True:#test
-        # if not targ.Has_EffectType(EffectType.ValueModifier) :
-            # add_listener("OnEffectStart", on_effect_start_burn)
 
-        # dispatch_event("OnEffectStart")#, effect=Effect(name="火印",magnitude=1000,duration=3,archetype=EffectType.ValueModifier,associatedItem=ActorValueType.health), caster=self, target=targ)   
-    #
     targ.ModActorValue(avtype=ActorValueType.health,value=-v)
     return v
 def cal_phy_damage(v,self : Actor,targ : Actor,state={"round":1,"environment":[]} ,flag_rounds=True):
@@ -835,6 +848,15 @@ def cal_poison_damage(v,self : Actor,targ : Actor,state={"round":1,"environment"
     return v
 def cal_custom_damage(v,self : Actor,targ : Actor,state={"round":1,"environment":[]}):
     return v
+def load_value(v,int_if_approchint=True):
+    if isinstance(v,str)  :
+        v=float(v)
+    try:
+        if int_if_approchint and abs(v-int(v))<1e-6:
+            v=int(v)
+    except:
+        pass
+    return v
 class Effect():
 
     def __str__(self):
@@ -842,13 +864,13 @@ class Effect():
     """魔法效果类，表示一个魔法效果"""
     def __init__(self,name="",baseID=0,magnitude=0,duration=0
                  , archetype=EffectType.Empty,max_stack=1,
-                 dispell_after_battle=True,
+                 dispell_after_battle=True,trigger_on_battle_start=False,dispell_onstatechange=False,
                  keywords_stack=None,associatedItem=None,target=None,caster=None,trigger_on_apply=None,recover_on_remove=None,trigger_on_turn_start=None):#stack=Stack
         self.name=name
         self.baseID=baseID
-        self.magnitude=magnitude
-        self.duration=duration
-        self.rest_duration=duration
+        self.magnitude=load_value(magnitude)
+        self.duration=load_value(duration)
+        self.rest_duration=load_value(duration)
         # self.rest_duration=self.duration
         self.archetype=archetype
         self.max_stack=max_stack
@@ -860,6 +882,8 @@ class Effect():
 
         self.active=False
         self.dispell_after_battle=dispell_after_battle
+        self.trigger_on_battle_start=trigger_on_battle_start
+        self.dispell_onstatechange=dispell_onstatechange
 
 
         #这几项需要自定义
@@ -881,14 +905,14 @@ class Effect():
         print(f"效果名称: {self.name}")
         print(f"效果类型: {self.archetype}")
         print(f"效果强度: {self.magnitude}")
-        print(f"效果持续时间: {self.duration}")
+        print(f"效果持续时间: {self.rest_duration} / {self.duration}")
         print(f"效果最大层数: {self.max_stack}")
         print(f"效果关键字: {self.keywords_stack}")
         print(f"效果关联属性: {self.associatedItem}")
         print(f"效果trig_recover: {self.trigger_on_apply},{self.trigger_on_turn_start},{self.recover_on_remove}")
     def Apply(self,caster:Actor,target:Actor):
         """应用魔法效果"""
-        print(f"施法者: {caster.name}, 目标: {target.name}, 效果: {self.name}"  )
+        if flag_debuglog>=3: print(f"施法者: {caster.name}, 目标: {target.name}, 效果: {self.name}"  )
         self.caster=caster
         self.target=target
         self.rest_duration=self.duration
@@ -903,7 +927,7 @@ class Effect():
             if len(sublist)<self.max_stack:
                 #添加一个新的效果，走后面的逻辑
                 pass
-            else:#刷新第一个的持续时间！！【注意仅供测试 不合理！！】
+            else:#刷新第一个的持续时间！！【注意仅供测试 不合理！！】应该顶掉最弱的
                 for eff in sublist:
                     eff.Refresh()
                     return
@@ -915,26 +939,34 @@ class Effect():
 
         #event trigger 
         if self.trigger_on_apply:
-            listener=Listener(event_name="OnEffectStart", callback=self.Enforce, #写法1
-                                                   condition_kwargs={"caster":caster, "target":target},
-                                                   caster=caster,target=target,effect=self) 
+            listener=Listener(event_name="OnEffectStart", callback=Effect.Enforce, #写法1
+                                                   condition_kwargs={"caster":caster, "target":target,"effect":self} ) 
+            listener.kwargs =dict( self=self ,caster=caster,target=target,effect=self)#都是必要的
             add_listener("OnEffectStart",  listener)
             self.related_listener.append(listener)
         if self.trigger_on_turn_start:
-            listener=Listener(event_name="OnTurnStart", callback=Effect.Enforce, #写法2
-                                                   condition_kwargs=None)
-            listener.kwargs =dict( self=self ,caster=caster,target=target,effect=self)
+            listener=Listener(event_name="OnTurnStart", callback=Effect.Enforce, #写法1
+                                                   condition_kwargs={ })
+            listener.kwargs =dict( self=self ,caster=caster,target=target,effect=self)#除了self=self其他的都暂时冗余但是不报错
             add_listener("OnTurnStart",   listener  )
             self.related_listener.append(listener)
-        if True:#turn end ？ 
-            listener=Listener(event_name="OnTurnEnd", callback=self.Elapse, 
-                                                   condition_kwargs=None)
-            # listener.kwargs =dict( self=self )
+        if True:#turn end  - Elapse
+            listener=Listener(event_name="OnTurnEnd", callback=Effect.Elapse, 
+                                                   condition_kwargs={ })
+            listener.kwargs =dict( self=self )
             add_listener("OnTurnEnd",   listener  )
             self.related_listener.append(listener)
         if self.recover_on_remove:
-            listener=Listener(event_name="OnEffectEnd", callback=self.Recover ,caster=caster,target=target,effect=self)
+            listener=Listener(event_name="OnEffectEnd", callback=Effect.Recover ,
+                              condition_kwargs={"effect":self} )
+            listener.kwargs =dict( self=self ,effect=self )#除了self=self其他的都暂时冗余但是不报错
             add_listener("OnEffectEnd",  listener)
+            self.related_listener.append(listener)
+        if self.dispell_onstatechange:
+            listener=Listener(event_name="OnActorStateChange", callback=Effect.Dispell ,
+                              condition_kwargs={"actor": target,"reason":"recheck"} )
+            listener.kwargs =dict( self=self ,reason="recheck" )#info recheck
+            add_listener("OnActorStateChange",  listener)
             self.related_listener.append(listener)
         event_oneffectstart(caster=caster,target=target,effect=self)
 
@@ -945,8 +977,9 @@ class Effect():
     def Elapse(self):
         """时间流逝，减少持续时间"""
         self.rest_duration-=1
+        if flag_debuglog>=4: print("效果持续时间减少:",self.name,self.rest_duration)
         if self.rest_duration<=0:
-            if flag_debuglog: print("效果持续时间结束，驱散效果:",self.name)
+            if flag_debuglog>=2: print("效果持续时间结束，驱散效果:",self.name)
             self.Dispell()
     def Dispell(self,**kwargs):
         """驱散魔法效果"""
@@ -957,13 +990,14 @@ class Effect():
         self.active=False
         # self.caster=None
         # self.target=None
-        self.rest_duration=0
+        # self.rest_duration=0
         event_oneffectend(caster=self.caster,target=self.target,effect=self)
         for listener in self.related_listener:
             remove_all_related_listeners(listener)
 
     def Enforce(self,**kwargs):  
         """魔法效果生效"""
+        if flag_debuglog>=3: print("效果生效:",self.name,self.value)
         if self.archetype==EffectType.ValueModifier:
             self.target.ModActorValue(avtype=self.associatedItem,value=self.value,** kwargs)
         if self.archetype==EffectType.PeakValueModifier:
@@ -971,6 +1005,7 @@ class Effect():
 
     def Recover(self,**kwargs):
         """恢复数值"""
+        if flag_debuglog>=4: print("效果结束后恢复:",self.name)
         if self.archetype==EffectType.ValueModifier:
             self.target.ModActorValue(avtype=self.associatedItem,value=-self.value,** kwargs)
         if self.archetype==EffectType.PeakValueModifier:
@@ -1850,28 +1885,7 @@ def dispatch_event(event_name, **kwargs):#"OnAttack"
                 if isinstance(v, EvtKwarg):
                     updated_kwargs[k] = ev.kwargs.get(v.keyname)
             listener.callback(**updated_kwargs)
-        # try:
-            # if type(fn) == type(lambda:0):
-            #     fn(ev)
-            # elif hasattr(fn, '__call__'):
-            #     fn(ev)
-            # elif isinstance(fn, Effect):
-            #     fn.Apply(ev.kwargs.get("caster"), ev.kwargs.get("target"))
-        # except Exception as e:
-        #     print("Event handler error:", e)
 
-
-def on_effect_start_burn(ev):
-    # print("触发效果开始事件:", ev.name)
-    eff = ev.kwargs.get("effect")
-    # print("效果名称:", eff.name)
-    if eff  and eff.name == "火印":   # 根据效果名或 id 判定
-        caster = ev.kwargs.get("caster")
-        target = ev.kwargs.get("target")
-        # 创建并应用一个瞬时伤害效果
-        burn = Effect(name="灼烧", magnitude=20, duration=3, archetype=EffectType.ValueModifier, associatedItem=ActorValueType.health)
-        burn.Apply(caster, target)
-        print(f"{target.name} 被 {caster.name} 施加了灼烧效果！")
 # add_listener("OnEffectStart", on_effect_start_burn)
 def event_record_damage(amount, source, target, damagetype, state):
     """发布伤害事件（封装现有调用点）"""
@@ -1887,16 +1901,15 @@ def event_onturnstart(turn_index): #"OnTurnStart"
     dispatch_event("OnTurnStart", turn_index=turn_index)
 def event_onturnend(turn_index): #"OnTurnEnd"
     dispatch_event("OnTurnEnd", turn_index=turn_index)
-
-
-
-
-
-
-
-
-
-
+#battle start
+def event_onbattlestart(battle_instance): #"OnBattleStart"
+    dispatch_event("OnBattleStart", battle_instance=battle_instance)
+#battle end
+def event_onbattleend(battle_instance): #"OnBattleEnd"
+    dispatch_event("OnBattleEnd", battle_instance=battle_instance)
+# actor state change check
+def event_onactorstatechange(actor, reason="recheck"):
+    dispatch_event("OnActorStateChange", actor=actor, reason=reason)
 
 
 
