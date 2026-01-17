@@ -142,7 +142,7 @@ class ActorValueType(Enum):
     defence=auto()# 防御
     armor=auto()# 护甲表示对物理类伤害的削弱能力，每点护甲会意味着在受到物理伤害时每一点生命将额外多承受6%的伤害
     atkrate=auto() # 攻速 表示攻击速度，战斗者每回合普攻造成的伤害会乘上一个攻速带来的系数，具体为[攻速的平方根/10]
-    avoid=auto() #闪避率（单位1%）
+    avoid=auto() #闪避率（单位1%,log映射）
     block=auto()# 伤害格挡 高级的物理减伤方式，在物理伤害进行过护甲减伤的基础上进一步减少伤害
     magicresist=auto()
     magicblock=auto()
@@ -154,6 +154,7 @@ class ActorValueType(Enum):
     INTEL=auto()
     custom=auto()
     amount=auto()# 物品数量，装备类物品的数量，或是技能的施法次数等
+AVhasMaxList=[ActorValueType.health,ActorValueType.mana,ActorValueType.amount]#有最大值的属性列表
 class DamageType(Enum):
     """伤害类型枚举"""
     Physical =auto()# 1
@@ -161,7 +162,28 @@ class DamageType(Enum):
     Magic =auto()# 3
     Pure =auto()# 4
     LifeRemove =auto()# 5
-
+def EnumConvert(enumclass, value):
+    """将值转换为枚举类型"""
+    #None to None
+    #nan to None
+    #float or int to enum()
+    #str to enum[]
+    if isinstance(value, enumclass):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    try:#"2" to 2
+        float(value)
+        value=int(value)
+    except:
+        pass
+    
+    if isinstance(value, (int, float)):
+        return enumclass(value)
+    if isinstance(value, str):
+        return enumclass[value]
 class ActorValue():
     """Actor属性类，表示一个角色的属性值"""
     aliases = {
@@ -206,12 +228,12 @@ class ActorValue():
     def ModValue(self,value,maxbound=None,zerobound=False ):    
         value_final=self.currentvalue+value
         # print(value_final,self.maxvalue)
-        maxbound=DefaultValue_If_None(maxbound,True if self.AV_Type in [ActorValueType.health,ActorValueType.mana,ActorValueType.amount] else False)
+        maxbound=DefaultValue_If_None(maxbound,True if self.AV_Type in AVhasMaxList else False)
         value_final=_clip(value_final,max_=self.maxvalue if maxbound else None,min_=0 if zerobound else None)
 
         self.currentvalue=value_final
         return value_final-value #实际变化
-    def ModPeakValue(self,value,flag_proportion=False,flag_clipup=True ):
+    def ModPeakValue(self,value,flag_proportion=True,flag_clipup=True ):
         oldmax=self.maxvalue
         self.maxvalue+= value
         if flag_clipup and self.maxvalue<self.currentvalue:
@@ -239,7 +261,7 @@ def strcat(*kargs,space=True):
 class Skill():
     """技能类，表示一个角色的技能"""
     def __init__(self,name="",baseID=0,default_param="",parameters=[],description="" 
-            ,skilltype=None,delivery=None,targetpermit=None,mana_cost=0,ammunition=1  ): 
+            ,skilltype=None,delivery=None,targetpermit=None,mana_cost=0,ammunition=1,effect_dict=None  ): 
 
         
         self.name=name
@@ -248,8 +270,14 @@ class Skill():
         self.description=description
         # self.skilltype=skilltype        #
         self.parameters=parameters
+        if effect_dict is None or  isinstance(effect_dict,float) and math.isnan(effect_dict):
+            effect_dict={}
+        if isinstance(effect_dict,str):
+            effect_dict=eval(effect_dict)
+        self.effect_list=[]
+        
+        self.effect_dict=effect_dict #{'寒霜攻击':[1]}
 
-        self.effect_list=[empty_magic_effect]
         self.mana_cost=mana_cost
 
         #以下属性只对active有效
@@ -258,14 +286,15 @@ class Skill():
         self.casting_cooldown=0 #冷却时间
         self.ammunition=ActorValue(ActorValueType.amount,ammunition)#弹药量
         self.allow_attack=True#该回合正常普通攻击
-        self.AI_module=None
-        ######        ['攻击中','攻击时']
+        self.AI_module=None 
+
+
+        skilltype=EnumConvert(SkillType, skilltype)        
         self.skilltype=DefaultValue_If_None(skilltype,SkillType.Passive ) 
-
-
+        delivery=EnumConvert(DeliveryType, delivery)
         self.delivery=DefaultValue_If_None(delivery,DeliveryType.Target if self.skilltype==SkillType.Active else DeliveryType.Contact) 
-
-        self.targetpermit=To_List( DefaultValue_If_None(targetpermit,[TargetPermit.Enemy ])  ) #注意是list！！！
+        targetpermit= [ EnumConvert( TargetPermit, term) for term in To_List( str2list(targetpermit) ) ] if targetpermit is not None else None
+        self.targetpermit=To_List( DefaultValue_If_None(targetpermit,[TargetPermit.Enemy ])  )   
     #默认print 返回name字符串
     def __str__(self):
         return "技能:"+str(self.name)
@@ -278,6 +307,7 @@ class Skill():
         print("目标许可:",[term.name for term in self.targetpermit])
         print("描述:",self.description)
         print("参数:",self.parameters)
+        print("法力消耗:",self.mana_cost)
         print("效果列表:")
         for effect in self.effect_list:
             print(" - ",effect.name)
@@ -285,30 +315,44 @@ class Skill():
         if flag_clear:
             self.effect_list=[]
         skillbase=self
-        #寒霜攻击,a:1,攻击中带有冰寒的力量，将对手缓慢冻结\n第一次命中开始对手攻速降低\v%
-        if skillbase.name=="寒霜攻击":
-            #寒霜攻击
-            effect=get_global_effect("寒霜攻击",copyflag=True)
 
-            effect.magnitude= -float(skillbase.parameters[0]) if skillbase.parameters else -10
-            # effect.duration=10  #     默认持续10回合
+        for key,paramlist in self.effect_dict.items():
+            effect=get_global_effect(key,copyflag=True)
+            if len(paramlist)>0:
+                ii=paramlist[0]-1
+                if ii>=0 and ii<len(skillbase.parameters):
+                    effect.magnitude=float(skillbase.parameters[ii])
+                else:print("warning: effect param index out of range",skillbase.name,key,paramlist,skillbase.parameters)
+            if len(paramlist)>1:
+                ii=paramlist[1]-1
+                if ii>=0 and ii<len(skillbase.parameters):
+                    effect.duration=float(skillbase.parameters[ii])
+                else:print("warning: effect param index out of range",skillbase.name,key,paramlist,skillbase.parameters)
             skillbase.effect_list.append(effect)
-        # 腐蚀毒素,a:3,攻击时释放出毒素缓慢腐蚀敌人的身躯\n每回合攻击额外造成\v点无视防御的物理伤害
-        if skillbase.name=="腐蚀毒素":
-            #腐蚀毒素
-            effect=get_global_effect("腐蚀毒素",copyflag=True)
-            effect.magnitude= -float(skillbase.parameters[0]) if skillbase.parameters else -10
-            skillbase.effect_list.append(effect)
-        if skillbase.name=="闪避":
-            self.skilltype=SkillType.Passive
-            self.delivery=DeliveryType.Self
-            #闪避
-            effect=get_global_effect("闪避",copyflag=True)
-            effect.magnitude= float(skillbase.parameters[0]) if skillbase.parameters else 10
-            effect.magnitude= avoid_convert(effect.magnitude,reverse=False)
-            effect.dispell_onstatechange=True
-            effect.dispell_after_battle=False 
-            skillbase.effect_list.append(effect)
+            #寒霜攻击,a:1,攻击中带有冰寒的力量，将对手缓慢冻结\n第一次命中开始对手攻速降低\v%
+            # if skillbase.name=="寒霜攻击":
+            #     #寒霜攻击
+            #     effect=get_global_effect("寒霜攻击",copyflag=True)
+
+            #     effect.magnitude= -float(skillbase.parameters[0]) if skillbase.parameters else -10
+            #     # effect.duration=10  #     默认持续10回合
+            #     skillbase.effect_list.append(effect)
+            # # 腐蚀毒素,a:3,攻击时释放出毒素缓慢腐蚀敌人的身躯\n每回合攻击额外造成\v点无视防御的物理伤害
+            # if skillbase.name=="腐蚀毒素":
+            #     #腐蚀毒素
+            #     effect=get_global_effect("腐蚀毒素",copyflag=True)
+            #     effect.magnitude= -float(skillbase.parameters[0]) if skillbase.parameters else -10
+            #     skillbase.effect_list.append(effect)
+            if skillbase.name=="闪避":
+                # self.skilltype=SkillType.Passive
+                # self.delivery=DeliveryType.Self
+                #闪避
+                # effect=get_global_effect("闪避",copyflag=True)
+                # effect.magnitude= float(skillbase.parameters[0]) if skillbase.parameters else 10
+                # effect.magnitude= avoid_convert(effect.magnitude,reverse=False)
+                effect.dispell_onstatechange=True
+                effect.dispell_after_battle=False 
+                # skillbase.effect_list.append(effect)
         return skillbase.effect_list
 
 #[自身攻击-目标防御]*我方攻速系数*目标护甲减伤*目标闪避减伤*暴击
@@ -405,6 +449,7 @@ class Group():
         if flag_showstate:
             print("阵营成员状态:")
             for term in self.members:
+                # term.refresh_basevalues()
                 term.showstate(full=1,flag_show_max=False)
         return returninfo
 
@@ -432,8 +477,7 @@ class Battle():
         for i in self.order:
             for actor in self.Groups[i].members:
                 actor.in_battle=self
-                # actor.check_passive_skills_selfbuff()
-                # actor.check_passive_skills_onattack( )
+                
 
 
         for r in range(1,global_max_rounds):
@@ -694,11 +738,13 @@ class Actor():
         aaa= copy.deepcopy(self)  
         # aaa.__class__=ActorRef
         return aaa
-    def ModActorValue(self,avtype:ActorValueType,value ,maxbound=True,zerobound=False,**kwargs): 
+    def ModActorValue(self,avtype:ActorValueType,value ,maxbound=None,zerobound=False,**kwargs): 
         """修改角色属性值"""
         if isinstance(avtype,ActorValueType):avtype=avtype.name
+        maxbound=DefaultValue_If_None(maxbound,True if avtype in AVhasMaxList else False)
+
         return self.__dict__[avtype].ModValue(value=value ,maxbound=maxbound,zerobound=zerobound)
-    def ModActorPeakValue(self,avtype:ActorValueType,value,flag_proportion=False,flag_clipup=True,**kwargs): 
+    def ModActorPeakValue(self,avtype:ActorValueType,value,flag_proportion=True,flag_clipup=True,**kwargs): 
         """修改角色属性峰值"""
         if isinstance(avtype,ActorValueType):avtype=avtype.name
         self.__dict__[avtype].ModPeakValue(value=value ,flag_proportion=flag_proportion,flag_clipup=flag_clipup)
@@ -747,6 +793,22 @@ class Actor():
         self.skilllist_obj=skillList
         self.active_spelllist=[term for term in self.skilllist_obj if term.skilltype==SkillType.Active]
         self.passive_skilllist=[term for term in self.skilllist_obj if term.skilltype==SkillType.Passive]
+    def refresh_basevalues(self,recal_buff=True):
+        """刷新角色的基础属性值"""
+        for avname, member in ActorValueType.__members__.items() :
+            # print(name, '=>',ActorValueType[name], member.value)
+            if member not in AVhasMaxList:
+                self.__dict__[avname].currentvalue=self.__dict__[avname].basevalue
+            else:
+                diff=self.__dict__[avname].maxvalue -self.__dict__[avname].basevalue
+                self.__dict__[avname].ModPeakValue(-diff)
+                # self.__dict__[avname].currentvalue=self.__dict__[avname].basevalue
+                # a=ActorValue(type_=member,currentvalue=.basevalue,maxvalue=self.__dict__[avname].basevalue,basevalue=self.__dict__[avname].basevalue)
+                # self.__dict__[avname]=a
+        if recal_buff:
+            for effect in self.buff_effectlist:
+                if not effect.is_amount_modifier():
+                    effect.Enforce( )
     def check_passive_skills(self):
         """检查并触发被动技能效果"""
         for listener in self.related_listener:
@@ -847,7 +909,7 @@ def cal_poison_damage(v,self : Actor,targ : Actor,state={"round":1,"environment"
     v=AD(v,targ.block)
     return v
 def cal_custom_damage(v,self : Actor,targ : Actor,state={"round":1,"environment":[]}):
-    return v
+    return eval("v")
 def load_value(v,int_if_approchint=True):
     if isinstance(v,str)  :
         v=float(v)
@@ -864,15 +926,15 @@ class Effect():
     """魔法效果类，表示一个魔法效果"""
     def __init__(self,name="",baseID=0,magnitude=0,duration=0
                  , archetype=EffectType.Empty,max_stack=1,
-                 dispell_after_battle=True,trigger_on_battle_start=False,dispell_onstatechange=False,
-                 keywords_stack=None,associatedItem=None,target=None,caster=None,trigger_on_apply=None,recover_on_remove=None,trigger_on_turn_start=None):#stack=Stack
+                 trigger_on_battle_start=False,dispell_after_battle=True,dispell_onstatechange=False,trigger_on_apply=None,recover_on_remove=None,trigger_on_turn_start=None,
+                 keywords_stack=None,associatedItem=None,target=None,caster=None,evalfunstr="value"):#stack=Stack
         self.name=name
         self.baseID=baseID
         self.magnitude=load_value(magnitude)
         self.duration=load_value(duration)
         self.rest_duration=load_value(duration)
         # self.rest_duration=self.duration
-        self.archetype=archetype
+        self.archetype=EnumConvert(EffectType, archetype)
         self.max_stack=max_stack
         self.keywords_stack=keywords_stack
 
@@ -887,20 +949,26 @@ class Effect():
 
 
         #这几项需要自定义
-        self.associatedItem=associatedItem
-        self.resist=cal_custom_damage
+        self.associatedItem=EnumConvert(ActorValueType, associatedItem)
+        if evalfunstr is None or evalfunstr=="" or (isinstance(evalfunstr,float) and math.isnan(evalfunstr)):
+            evalfunstr="value"
+        self.evalfunstr=evalfunstr 
         self.kwargs={}
         self.extra_custom_scripts=[]
 
         maybe_damage_heal=False
-        if self.associatedItem in [ActorValueType.health,ActorValueType.mana] and self.archetype in [EffectType.ValueModifier ]:
-            maybe_damage_heal=True
+        maybe_damage_heal = self.is_amount_modifier()
 
         self.trigger_on_apply = DefaultValue_If_None(trigger_on_apply, True )
         self.trigger_on_turn_start = DefaultValue_If_None(trigger_on_turn_start, maybe_damage_heal )
         self.recover_on_remove = DefaultValue_If_None(recover_on_remove, not maybe_damage_heal )
 
         self.related_listener=[]#注册的监听器列表
+    def evalfun(self,value,caster:Actor,target:Actor):
+        return eval(self.evalfunstr,globals(),locals())
+    def is_amount_modifier(self):
+        maybe_damage_heal=self.associatedItem in AVhasMaxList and self.archetype in [EffectType.ValueModifier ]
+        return maybe_damage_heal
     def showinfo(self):
         print(f"效果名称: {self.name}")
         print(f"效果类型: {self.archetype}")
@@ -916,7 +984,7 @@ class Effect():
         self.caster=caster
         self.target=target
         self.rest_duration=self.duration
-        self.value=self.resist( self.magnitude,caster,target)
+        self.value=self.evalfun( self.magnitude,caster,target)
         #check self.max_stack
         if target.Has_EffectId(self.baseID):
             #找到已有效果
@@ -995,7 +1063,7 @@ class Effect():
         for listener in self.related_listener:
             remove_all_related_listeners(listener)
 
-    def Enforce(self,**kwargs):  
+    def Enforce(self,**kwargs):  #注意这里只能修改actorvalue，否则会乱套
         """魔法效果生效"""
         if flag_debuglog>=3: print("效果生效:",self.name,self.value)
         if self.archetype==EffectType.ValueModifier:
@@ -1010,7 +1078,12 @@ class Effect():
             self.target.ModActorValue(avtype=self.associatedItem,value=-self.value,** kwargs)
         if self.archetype==EffectType.PeakValueModifier:
             self.target.ModActorPeakValue(avtype=self.associatedItem,value=-self.value,** kwargs)
-
+def str2list(s):
+    rtv=[]
+    if  isinstance(s,str) :
+        rtv=s.split(",")
+        rtv=[ (id) for id in rtv]
+    return rtv
 def loadskill(dic):
     rtv=[]
     params=[]
@@ -1934,9 +2007,9 @@ for i in range(len(dat_effect)):
     dic=dat_effect.loc[i].to_dict()
 
     effectbase=Effect(name=dic["Name"],baseID=dic['BaseID'],magnitude=dic["Magnitude"],
-                          archetype=EffectType[dic['Archetype']],keywords_stack=dic["keywords_stack"]
+                          archetype= dic['Archetype']  ,keywords_stack=dic["keywords_stack"]
                           ,max_stack=dic["max_stack"],
-                      associatedItem=ActorValueType[dic['AssociatedItem']], duration=dic["Duration"] )
+                      associatedItem= dic['AssociatedItem'] , duration=dic["Duration"],evalfunstr=dic["evalfunstr"] )
     # effectbase=Effect()
     global_EffectList.append(effectbase)
 
@@ -1946,10 +2019,10 @@ for i in range(len(dat_skill)):
     dic=dat_skill.loc[i].to_dict()
 
     skillbase=Skill(name=dic["Name"],baseID=dic['BaseID'],default_param=dic["DefaultParams"]
-                    ,description=dic["Description"])
+                    ,mana_cost=dic["mana_cost"],targetpermit= dic['targetpermit']  ,delivery= dic['Delivery']  ,skilltype= dic['SkillType']
+                    ,description=dic["Description"],effect_dict=dic["effect_list"] )
     skillbase.process_skill_effects()
     global_SkillList.append(skillbase)
-
 #加载 永不复还 敌人单位
 dat = pandas.read_csv("./csv/enemies.csv", comment='%', header=0)
 print(len(dat))
@@ -1972,5 +2045,5 @@ postset_bat()
 
 
 if __name__ == "__main__":
-
+    ActorValueType('health')
     print(empty_magic_effect)
