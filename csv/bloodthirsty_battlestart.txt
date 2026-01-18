@@ -1,0 +1,4 @@
+bloodthirsty_battlestart
+OnEffectStart
+def bloodthirsty_battlestart(self,caster,target,custom_param=0,**kwargs):
+    print(self,caster,target,custom_param)

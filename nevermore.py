@@ -3,6 +3,7 @@ import numpy as np
 import math,copy
 from enum import Enum, auto
 import csv,pandas
+from pathlib import Path
 import functools
 global_max_rounds=999
 global_max_rounds_test=5
@@ -26,8 +27,8 @@ def To_List(obj) -> list:
     else:
         return [obj]
 def DefaultValue_If_None(x=None,value=None):
-    """如果x为None，则返回value，否则返回x"""
-    if x is None:
+    """如果x为None or isnan，则返回value，否则返回x"""
+    if x is None or (isinstance(x,float) and math.isnan(x)):
         x=value
     return x
 def getnew(input,key="new"):
@@ -98,7 +99,8 @@ class DeliveryType(Enum):#这个是关键！施加魔法效果
     Self =auto()# 1
     Area =auto()# 2
     Contact=auto()
-    Target =auto()# 3
+    Hitted=auto()
+    Target =auto() 
     # Targets =auto()   
 #OnEffectStart( caster,target,*args)
 #OnEffectEnd(caster,target,*args)
@@ -113,16 +115,16 @@ class EffectType(Enum):# archetype仅仅简化，实际上从根本上允许脚�
     Empty=0
     ValueModifier =auto()# 1
     PeakValueModifier =auto()# 1 
-    MagicImmunity =auto() 
-    Mute =auto()#  
-    Disarm =auto()#  
+    MagicImmunity =auto()  #  免疫魔法效果
+    Mute =auto()#   禁用技能
+    Disarm =auto()#  禁用武器
     Break =auto()#  #禁用被动
-    Stun =auto()#  
-    Summon =auto()#  
-    Image =auto()
-    ManaBurn =auto()
-    Ethereal =auto()
-    Absorb=auto()
+    Stun =auto()#  #眩晕
+    Summon =auto()#  召唤
+    Image =auto()#  幻影
+    ManaBurn =auto()#  法力燃烧
+    Ethereal =auto()#  虚无
+    Absorb=auto()#  吸收
 
 
 
@@ -343,16 +345,9 @@ class Skill():
             #     effect=get_global_effect("腐蚀毒素",copyflag=True)
             #     effect.magnitude= -float(skillbase.parameters[0]) if skillbase.parameters else -10
             #     skillbase.effect_list.append(effect)
-            if skillbase.name=="闪避":
-                # self.skilltype=SkillType.Passive
-                # self.delivery=DeliveryType.Self
-                #闪避
-                # effect=get_global_effect("闪避",copyflag=True)
-                # effect.magnitude= float(skillbase.parameters[0]) if skillbase.parameters else 10
-                # effect.magnitude= avoid_convert(effect.magnitude,reverse=False)
+            if skillbase.name=="闪避":#以后写进数据文件csv
                 effect.dispell_onstatechange=True
-                effect.dispell_after_battle=False 
-                # skillbase.effect_list.append(effect)
+                effect.dispell_after_battle=False
         return skillbase.effect_list
 
 #[自身攻击-目标防御]*我方攻速系数*目标护甲减伤*目标闪避减伤*暴击
@@ -465,7 +460,7 @@ class Battle():
         lis=[]
         for i in self.order:
             for actor in self.Groups[i].members:
-                lis.append(lis)
+                lis.append(actor)
         return lis     
     def StartBattle(self):
         """开始战斗"""
@@ -809,31 +804,66 @@ class Actor():
             for effect in self.buff_effectlist:
                 if not effect.is_amount_modifier():
                     effect.Enforce( )
+        if flag_debuglog>=6:
+            print("刷新属性值:",self.name)
+            self.showstate(full=True,flag_show_max=True)
     def check_passive_skills(self):
         """检查并触发被动技能效果"""
+        self.refresh_basevalues(recal_buff=True)
         for listener in self.related_listener:
             remove_all_related_listeners(  listener)
         self.related_listener=[]#清空监听器列表，重新注册
         self.check_passive_skills_selfbuff()
         self.check_passive_skills_onattack( )
+        self.check_aura_listener()
     def check_passive_skills_selfbuff(self):##       【记得注意注册时机、状态刷新、和取消注册！！】
-        """检查并触发被动技能效果"""
+        """检查并触发被动技能 for self buff效果""" 
         dispatch_event("OnActorStateChange", actor=self, reason="recheck")
         for skill in self.passive_skilllist:
-            if skill.skilltype==SkillType.Passive and skill.delivery==DeliveryType.Self:
-                for effect in skill.effect_list:
-                    effect_copy=copy.deepcopy(effect)
-                    effect_copy.Apply(self,self)
-
+            if skill.skilltype==SkillType.Passive:
+                if skill.delivery==DeliveryType.Self:
+                    for effect in skill.effect_list:
+                        effect_copy=copy.deepcopy(effect)
+                        effect_copy.Apply(self,self)
+    def check_aura_listener(self):
+            listener=Listener(event_name="OnTurnStart", callback=self.check_aura_skills, #写法1
+                                                   condition_kwargs={ })
+            listener.kwargs =dict( ) 
+            add_listener("OnTurnStart",   listener  )
+            self.related_listener.append(listener)
+    def check_aura_skills(self):##       【记得注意注册时机、状态刷新、和取消注册！！】
+        """检查并触发光环技能效果""" 
+        for skill in self.skilllist_obj:
+            if skill.skilltype==SkillType.Aura:
+                # if skill.delivery==DeliveryType.Aura:
+                    battle=self.in_battle
+                    if battle:
+                        for actor in battle.Get_All_Units():
+                            # for actor in group:
+                                if self.check_target_permit(skill,actor):
+                                    target= actor
+                                    for effect in skill.effect_list:
+                                        effect_copy=copy.deepcopy(effect)
+                                        effect_copy.Apply(self,target)
+                    else:
+                        print("不在战斗中")
     def check_passive_skills_onattack(self  ):##       【记得注意注册时机、状态刷新、和取消注册！！】
-        """检查并触发被动技能效果"""
+        """检查并触发被动技能 for on attack效果"""
         for skill in self.passive_skilllist:
-            if  skill.skilltype==SkillType.Passive and skill.delivery==DeliveryType.Contact:
-                listener=Listener(event_name="OnRecordDamage", callback=self.cast_spell,
-                    condition_kwargs={"source":self},#, "target":targ
-                                  spell=skill,target=EvtKwarg("target") )
-                add_listener("OnRecordDamage",  listener)
-                self.related_listener.append(listener)
+            if  skill.skilltype==SkillType.Passive :
+                if skill.delivery==DeliveryType.Contact:
+                    listener=Listener(event_name="OnRecordDamage", callback=self.cast_spell,
+                        condition_kwargs={"source":self},#, "target":targ
+                                    spell=skill,target=EvtKwarg("target") )
+                    add_listener("OnRecordDamage",  listener)
+                    self.related_listener.append(listener)
+                if skill.delivery==DeliveryType.Hitted:#by others!
+                    listener=Listener(event_name="OnRecordDamage", callback=self.cast_spell,
+                        condition_kwargs={"target":self},#, "source":targ
+                                    spell=skill,target=EvtKwarg("source") )
+                    add_listener("OnRecordDamage",  listener)
+                    self.related_listener.append(listener)
+
     def __del__(self):#析构函数
         """删除角色，取消注册所有监听器，将自身化为None"""
         #删除全部魔法效果、状态效果
@@ -844,7 +874,16 @@ class Actor():
         self.related_listener=[]
         #Noneify
         del self
-
+    def check_target_permit(self,spell:Skill,target):
+        """检查目标是否符合技能的目标许可"""
+        permit=False
+        if TargetPermit.Self in spell.targetpermit  and target==self:
+            permit=True
+        if TargetPermit.Ally in spell.targetpermit and self.Is_SameGroup(target) and target !=self:
+            permit=True
+        if TargetPermit.Enemy in spell.targetpermit and (not self.Is_SameGroup(target)):
+            permit=True
+        return permit
 
 
 #事件系统: 事件-条件-动作
@@ -927,7 +966,7 @@ class Effect():
     def __init__(self,name="",baseID=0,magnitude=0,duration=0
                  , archetype=EffectType.Empty,max_stack=1,
                  trigger_on_battle_start=False,dispell_after_battle=True,dispell_onstatechange=False,trigger_on_apply=None,recover_on_remove=None,trigger_on_turn_start=None,
-                 keywords_stack=None,associatedItem=None,target=None,caster=None,evalfunstr="value"):#stack=Stack
+                 keywords_stack=None,associatedItem=None,target=None,caster=None,evalfunstr="value",resist_dispell=0,scripts=""):#stack=Stack
         self.name=name
         self.baseID=baseID
         self.magnitude=load_value(magnitude)
@@ -947,6 +986,8 @@ class Effect():
         self.trigger_on_battle_start=trigger_on_battle_start
         self.dispell_onstatechange=dispell_onstatechange
 
+        self.resist_dispell=DefaultValue_If_None(resist_dispell,0)#防止驱散
+
 
         #这几项需要自定义
         self.associatedItem=EnumConvert(ActorValueType, associatedItem)
@@ -963,9 +1004,39 @@ class Effect():
         self.trigger_on_turn_start = DefaultValue_If_None(trigger_on_turn_start, maybe_damage_heal )
         self.recover_on_remove = DefaultValue_If_None(recover_on_remove, not maybe_damage_heal )
 
+
+
+
+        scripts_=DefaultValue_If_None(scripts, "")
+        self.scripts_filenames=eval(scripts_) if scripts_  else {}
+        self.process_scripts()
+
         self.related_listener=[]#注册的监听器列表
     def evalfun(self,value,caster:Actor,target:Actor):
         return eval(self.evalfunstr,globals(),locals())
+    def process_scripts(self,subdir="./csv/"):
+        #self.scripts_filenames={"file0":{},"file1": {}}  #文件名:参数列表
+        # load to self.scripts
+        self.scripts_list=[]#[ # {"event_name":"","callback":fun_, "params":{},"text":""}]
+        for scriptname, params in self.scripts_filenames.items():
+            for suffix in ["",".txt","py"]:
+                if Path(subdir).joinpath(scriptname+suffix).exists():
+                    with open(Path(subdir).joinpath(scriptname+suffix)) as f:
+                        script_text = f.read()
+                    # 第一行函数名
+                    first_line = script_text.splitlines()[0]
+                    #第二行事件名称
+                    second_line = script_text.splitlines()[1]
+                    #函数定义从第三行开始
+                    func_def = "\n".join(script_text.splitlines()[2:])
+                    self.scripts_list.append({"text":script_text,"params":params,"fun_name":first_line,"event_name":second_line,"func_def":func_def})
+                    #添加函数
+                    global_observer_list.append( func_def )
+                    exec( func_def ,globals(),locals())
+                    exec("Effect."+first_line+"="+first_line,globals(),locals())
+                    print(f"加载效果脚本: {scriptname+suffix} 函数名: {first_line} 事件: {second_line}")
+                    break
+
     def is_amount_modifier(self):
         maybe_damage_heal=self.associatedItem in AVhasMaxList and self.archetype in [EffectType.ValueModifier ]
         return maybe_damage_heal
@@ -998,18 +1069,41 @@ class Effect():
             else:#刷新第一个的持续时间！！【注意仅供测试 不合理！！】应该顶掉最弱的
                 for eff in sublist:
                     eff.Refresh()
+                    if flag_debuglog>=4: print("效果已存在，刷新持续时间:",self.name)
                     return
 
 
         if self.rest_duration>0:#施加buff列表
             self.active=True
             self.target.buff_effectlist.append(self)
-
+ 
         #event trigger 
+        
+        for script_info in self.scripts_list:
+            # {"event_name":"","callback":fun_, "params":{},"text":""}
+            script_info["text"]
+            event_name=script_info.get("event_name","OnEffectStart")
+            listener=Listener(event_name=event_name, 
+                              callback=eval("Effect."+script_info.get("fun_name","Empty"),globals(),locals()),
+                              condition_kwargs={"effect":self} if event_name == "OnEffectStart" else None,
+                              )
+            params0=dict( self=self ,caster=caster,target=target,effect=self  )
+            
+            params=script_info.get("params",{})
+            listener.kwargs =  {**params0, **params}
+            add_listener(event_name,   listener  )
+
+
+
         if self.trigger_on_apply:
+            # listener=Listener(event_name="OnEffectStart", callback=self.Enforce, #写法1
+            #                                        condition_kwargs={} ) 
+            # listener.kwargs =dict(  caster=caster,target=target )#都是必要的"effect":self
+
             listener=Listener(event_name="OnEffectStart", callback=Effect.Enforce, #写法1
-                                                   condition_kwargs={"caster":caster, "target":target,"effect":self} ) 
+                                                   condition_kwargs={"effect":self} ) 
             listener.kwargs =dict( self=self ,caster=caster,target=target,effect=self)#都是必要的
+
             add_listener("OnEffectStart",  listener)
             self.related_listener.append(listener)
         if self.trigger_on_turn_start:
@@ -2001,6 +2095,40 @@ global_MonsterBaseList=GlobalItemList()
 global_SkillList.append(Skill())
 global_EffectList.append(empty_magic_effect)
 global_MonsterBaseList.append(copy.deepcopy(Justin))
+
+def InstantiateMonsterByName(name_or_id,showinfo=True)->Actor:
+    """通过名称or int实例化敌人单位"""
+    if isinstance(name_or_id,list):
+        return [InstantiateMonsterByName(x,showinfo) for x in name_or_id]
+    if isinstance(name_or_id,(int,float)):
+        id=int(name_or_id)
+        byid=True
+    else:
+        name=name_or_id
+        byid=False
+    monsterbaselist=[copy.deepcopy(x ) for x in global_MonsterBaseList if (x.name==name  if not byid else x.baseID==id) ] 
+    if len(monsterbaselist)==0:
+        raise ValueError(f"无法通过名称or ID:{name_or_id}找到对应敌人单位")
+    monsterbase=monsterbaselist[0]
+    if len(monsterbaselist)>1:
+        print(f"警告：通过名称or ID:{name_or_id}找到多个敌人单位，默认实例化第一个")
+    if showinfo:
+        print(f"已实例化单位：{monsterbase.name} (baseID:{monsterbase.baseID})")
+        monsterbase.showstate(full=True)
+
+    return monsterbase
+
+
+
+
+
+
+
+
+
+
+
+
 #加载 魔法效果
 dat_effect = pandas.read_csv("./csv/Effects.csv",  header=0)
 for i in range(len(dat_effect)):
@@ -2009,7 +2137,8 @@ for i in range(len(dat_effect)):
     effectbase=Effect(name=dic["Name"],baseID=dic['BaseID'],magnitude=dic["Magnitude"],
                           archetype= dic['Archetype']  ,keywords_stack=dic["keywords_stack"]
                           ,max_stack=dic["max_stack"],
-                      associatedItem= dic['AssociatedItem'] , duration=dic["Duration"],evalfunstr=dic["evalfunstr"] )
+                      associatedItem= dic['AssociatedItem'] , duration=dic["Duration"],
+                      evalfunstr=dic["evalfunstr"],resist_dispell= dic["resist_dispell"],scripts=dic["scripts"])
     # effectbase=Effect()
     global_EffectList.append(effectbase)
 
