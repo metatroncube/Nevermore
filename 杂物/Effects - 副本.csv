@@ -1,0 +1,6 @@
+BaseID,Name,Magnitude,Duration,Archetype,max_stack,keywords_stack,AssociatedItem,Description,evalfunstr
+1,寒霜攻击,1,10,ValueModifier,1,frost,atkrate,攻速降低\v%,"-value"
+2,腐蚀毒素,1,2,ValueModifier,1,poison,health,每回合攻击额外造成\v点无视防御的物理伤害,"-value"
+4,上位威压attack,11,inf,ValueModifier,1,repress,attack,每比对手高出一级，便在先前基础上进一步削弱对手\v%的攻
+5,上位威压defence,11,inf,ValueModifier,1,repress,defence,每比对手高出一级，便在先前基础上进一步削弱对手\v%的防
+6,闪避,22.314355,inf,ValueModifier,1,avoid,avoid,闪躲敌人的攻击\n有\v%概率闪避敌人的攻击,"avoid_convert(value,0)"
