@@ -468,11 +468,11 @@ class Battle():
         #先手判定 
         #召唤判定
         #支援判定
-        event_onbattlestart(self)
+
         for i in self.order:
             for actor in self.Groups[i].members:
                 actor.in_battle=self
-                
+        event_onbattlestart(self)                
 
 
         for r in range(1,global_max_rounds):
@@ -701,6 +701,19 @@ class Actor():
             if buff.archetype==typ :
                 hastype=True
         return hastype
+    def enemy_injured_proportion(self):#敌人损失生命值比例，选取损伤最多的，返回比例
+        """计算敌人损失生命值的比例"""
+        max_proportion=0
+        battle=self.in_battle
+        if battle is not None:
+            for group in battle.Groups:
+                if not self.Is_SameGroup(group.members[0]):
+                    for enemy in group.members:
+                        if enemy.Is_Alive():
+                            proportion_lost=1-enemy.GetActorValuePercentage(ActorValueType.health)
+                            if proportion_lost>max_proportion:
+                                max_proportion=proportion_lost
+        return max_proportion
     # def Has_Effect(self,eff:Effect):
     #     haseff=False
     #     for buff in self.effect_list:
