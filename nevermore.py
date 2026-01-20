@@ -320,6 +320,10 @@ class Skill():
 
         for key,paramlist in self.effect_dict.items():
             effect=get_global_effect(key,copyflag=True)
+            # if skillbase.skilltype==SkillType.Passive and skillbase.delivery==DeliveryType.Self:# 被动技能自身生效
+            #     effect.dispell_onstatechange=True
+            #     effect.dispell_after_battle=False    
+            # effect=copy.deepcopy(effect)        
             if len(paramlist)>0:
                 ii=paramlist[0]-1
                 if ii>=0 and ii<len(skillbase.parameters):
@@ -331,23 +335,8 @@ class Skill():
                     effect.duration=float(skillbase.parameters[ii])
                 else:print("warning: effect param index out of range",skillbase.name,key,paramlist,skillbase.parameters)
             skillbase.effect_list.append(effect)
-            #寒霜攻击,a:1,攻击中带有冰寒的力量，将对手缓慢冻结\n第一次命中开始对手攻速降低\v%
-            # if skillbase.name=="寒霜攻击":
-            #     #寒霜攻击
-            #     effect=get_global_effect("寒霜攻击",copyflag=True)
 
-            #     effect.magnitude= -float(skillbase.parameters[0]) if skillbase.parameters else -10
-            #     # effect.duration=10  #     默认持续10回合
-            #     skillbase.effect_list.append(effect)
-            # # 腐蚀毒素,a:3,攻击时释放出毒素缓慢腐蚀敌人的身躯\n每回合攻击额外造成\v点无视防御的物理伤害
-            # if skillbase.name=="腐蚀毒素":
-            #     #腐蚀毒素
-            #     effect=get_global_effect("腐蚀毒素",copyflag=True)
-            #     effect.magnitude= -float(skillbase.parameters[0]) if skillbase.parameters else -10
-            #     skillbase.effect_list.append(effect)
-            if skillbase.name=="闪避":#以后写进数据文件csv
-                effect.dispell_onstatechange=True
-                effect.dispell_after_battle=False
+
         return skillbase.effect_list
 
 #[自身攻击-目标防御]*我方攻速系数*目标护甲减伤*目标闪避减伤*暴击
@@ -586,6 +575,7 @@ class Actor():
         self.buff_effectlist=[]#魔法效果
 
         self.related_listener=[]#注册的监听器列表
+        # self.passivebuff_effectlist=[]#被动魔法效果列表
 
     def chance_reset(self):
         self.cast_chance=1#可以施法几次
@@ -838,6 +828,8 @@ class Actor():
                     for effect in skill.effect_list:
                         effect_copy=copy.deepcopy(effect)
                         effect_copy.Apply(self,self)
+                        effect_copy.dispell_onstatechange=True
+                        effect_copy.dispell_after_battle=False
     def check_aura_listener(self):
             listener=Listener(event_name="OnTurnStart", callback=self.check_aura_skills, #写法1
                                                    condition_kwargs={ })
@@ -859,7 +851,7 @@ class Actor():
                                         effect_copy=copy.deepcopy(effect)
                                         effect_copy.Apply(self,target)
                     else:
-                        print("不在战斗中")
+                        if flag_debuglog>=5:print("不在战斗中")
     def check_passive_skills_onattack(self  ):##       【记得注意注册时机、状态刷新、和取消注册！！】
         """检查并触发被动技能 for on attack效果"""
         for skill in self.passive_skilllist:

@@ -1,0 +1,8 @@
+bloodthirsty_battleend
+OnBattleEnd
+def bloodthirsty_battleend(self,custom_param=0,**kwargs):
+    self.Recover()
+    if flag_debuglog>=5:print("end battle recover",self.name)
+    #self.value=self.magnitude*(injured_proportion)*100
+    #print("atkrate buff",self.value)
+    #self.Enforce()
