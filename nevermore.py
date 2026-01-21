@@ -374,7 +374,7 @@ def avoid_convert(avoid,reverse=True):
         return (1 - np.exp(avoid/-100)) * 100
     else:
         return -100*np.log(1-avoid/100)
-def factor_magicresist(resist):#闪避
+def factor_magicresist(resist):#魔法抗性减伤
     """计算魔法抗性减伤"""
     resist=getvalue(resist)
     return  _clip(1-resist/100  , min_=0,max_=1)
@@ -515,10 +515,11 @@ class Battle():
                     #技能
                     returnInfo={}
                     if not (actor.Has_EffectType(EffectType.Mute )or actor.Has_EffectType(EffectType.Stun )):
+                        pass
                         returnInfo=actor.cast_once()
                     # print(returnInfo)
 
-                    if not ("noattack" in returnInfo)  :
+                    if not ("noattack" in returnInfo and returnInfo["noattack"] ) : 
                     #普攻
                         
                         actor.cast_attack(enemy_target,state={"round":round_index,"environment":[]})
@@ -647,24 +648,52 @@ class Actor():
             for spell in self.active_spelllist:
                 if spell.ammunition.currentvalue>0:
                     return spell
-            return self.active_spelllist[0]
+            # return self.active_spelllist[0]
         return None
     def cast_once(self):
         """施放一次主动技能"""
         spell=self.get_current_spell()
         if spell is not None:
-            spell.ammunition.ModValue(-1,zerobound=True) #消耗弹药
+            
             if spell.casting_pretime>1:#施法中  打断则无法再次蓄力
                 spell.casting_pretime-=1      
                 return  {"noattack":True}#popout
-            while (len(self.active_spelllist)>=1):
-                spell=self.active_spelllist[0]
+            # while (len(self.active_spelllist)>=1):
+            #     spell=self.active_spelllist[0]
                 # spell=Skill()
+            if 1:
                 assert spell.skilltype==SkillType.Active
                 # if 
 
                 # self.cast_once()
-                self.casting_pretime=spell.casting_pretime
+                # self.casting_pretime=spell.casting_pretime
+                if self.in_battle is not None:#select one from targetpermit
+                    battle=self.in_battle
+                    enemy_group=None
+                    for i in battle.order:
+                        if battle.Groups[i]==self.parent_group:
+                            own_group_index=i
+                    for op in battle.order:
+                        if op!=own_group_index:
+                            opponent=op
+                            # print(i,opponent,len(self.Groups))[self.order[i]].members
+                            enemy_group=battle.Groups[opponent]
+                            break
+                    enemy_target= enemy_group.members[enemy_group.Frontier()] 
+                    target=None
+                    if TargetPermit.Self in spell.targetpermit  :
+                        target=self
+                    elif TargetPermit.Ally in spell.targetpermit:
+                        target=self.parent_group.members[0]#默认选第一个
+                    elif TargetPermit.Enemy in spell.targetpermit:
+                        target=enemy_target
+                    else:
+                        target=None
+                if target is not None:
+                    if flag_debuglog: print(spell.name,"施法目标:",target.name)
+                    self.cast_spell(spell,target=target)
+                    spell.ammunition.ModValue(-1,zerobound=True) #消耗弹药
+                return {"spell":spell,"noattack":not spell.allow_attack}
                 # if  
     #如果则
             if spell.allow_attack:
@@ -696,13 +725,15 @@ class Actor():
         max_proportion=0
         battle=self.in_battle
         if battle is not None:
-            for group in battle.Groups:
-                if not self.Is_SameGroup(group.members[0]):
-                    for enemy in group.members:
-                        if enemy.Is_Alive():
-                            proportion_lost=1-enemy.GetActorValuePercentage(ActorValueType.health)
-                            if proportion_lost>max_proportion:
-                                max_proportion=proportion_lost
+            try:
+                for group in battle.Groups:
+                    if not self.Is_SameGroup(group.members[0]):
+                        for enemy in group.members:
+                            if enemy.Is_Alive():
+                                proportion_lost=1-enemy.GetActorValuePercentage(ActorValueType.health)
+                                if proportion_lost>max_proportion:
+                                    max_proportion=proportion_lost
+            except Exception as er: print(er)
         return max_proportion
     # def Has_Effect(self,eff:Effect):
     #     haseff=False

@@ -5,3 +5,4 @@ BaseID,Name,Magnitude,Duration,Archetype,max_stack,keywords_stack,AssociatedItem
 5,上位威压attack,11,1,ValueModifier,1,repress,attack,每比对手高出一级，便在先前基础上进一步削弱对手\v%的攻,"-value/100*target.attack.basevalue*_clip(caster.level.value-target.level.value,0,None)",2,
 6,上位威压defence,11,1,ValueModifier,1,repress,defence,每比对手高出一级，便在先前基础上进一步削弱对手\v%的防,"-value/100*target.defence.basevalue*_clip(caster.level.value-target.level.value,0,None)",2,
 7,闪避,22.3,inf,ValueModifier,1,avoid,avoid,闪躲敌人的攻击\n有\v%概率闪避敌人的攻击,"avoid_convert(value,False)",2,
+8,奥术飞弹,10,0,ValueModifier,inf,magic_damage,health,奥术飞弹造成\v点魔法伤害,"-cal_magic_damage(value,caster,target)",3,
