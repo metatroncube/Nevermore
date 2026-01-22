@@ -1,7 +1,7 @@
 BaseID,Name,Magnitude,Duration,Archetype,max_stack,keywords_stack,AssociatedItem,Description,evalfunstr,resist_dispell,scripts
 1,寒霜攻击,1,10,ValueModifier,1,frost,atkrate,攻速降低\v%,"-value",1,
 2,腐蚀毒素,1,2,ValueModifier,1,poison,health,每回合攻击额外造成\v点无视防御的物理伤害,"-value",1,
-4,嗜血本能,1,inf,ValueModifier,1,bloodthirsty_battlestart,atkrate,根据对手战前已损失生命比例，每1%提升自身\v%的攻速,0,3,"{'bloodthirsty_battlestart':{'custom_param':111},'bloodthirsty_battleend':{}}"
+4,嗜血本能,1,inf,ValueModifier,1,bloodthirsty_battlestart,atkrate,根据对手战前已损失生命比例，每1%提升自身\v%的攻速,0,3,"{'bloodthirsty_battlestart':{'battle_instance':0},'bloodthirsty_battleend':{'battle_instance':0}}"
 5,上位威压attack,11,1,ValueModifier,1,repress,attack,每比对手高出一级，便在先前基础上进一步削弱对手\v%的攻,"-value/100*target.attack.basevalue*_clip(caster.level.value-target.level.value,0,None)",2,
 6,上位威压defence,11,1,ValueModifier,1,repress,defence,每比对手高出一级，便在先前基础上进一步削弱对手\v%的防,"-value/100*target.defence.basevalue*_clip(caster.level.value-target.level.value,0,None)",2,
 7,闪避,22.3,inf,ValueModifier,1,avoid,avoid,闪躲敌人的攻击\n有\v%概率闪避敌人的攻击,"avoid_convert(value,False)",2,

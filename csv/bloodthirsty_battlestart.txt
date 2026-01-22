@@ -1,6 +1,8 @@
 bloodthirsty_battlestart
 OnBattleStart
-def bloodthirsty_battlestart(self,custom_param=0,**kwargs):
+def bloodthirsty_battlestart(self, battle_instance=0,**kwargs):
+    if self.target.in_battle !=battle_instance:
+        return #print("not battle self")
     self.Recover()
     injured_proportion=1-(self.target.health.currentvalue/self.target.health.maxvalue)
     injured_proportion=self.target.enemy_injured_proportion()

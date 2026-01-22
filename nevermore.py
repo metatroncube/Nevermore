@@ -263,7 +263,7 @@ def strcat(*kargs,space=True):
 class Skill():
     """技能类，表示一个角色的技能"""
     def __init__(self,name="",baseID=0,default_param="",parameters=[],description="" 
-            ,skilltype=None,delivery=None,targetpermit=None,mana_cost=0,ammunition=1,effect_dict=None  ): 
+            ,skilltype=None,delivery=None,targetpermit=None,mana_cost=0,ammunition=1,effect_dict=None,allow_attack=True  ): 
 
         
         self.name=name
@@ -286,8 +286,8 @@ class Skill():
         self.casting_pretime=1#0 瞬发 1 普通 2蓄力
         self.casting_duration=1#0 瞬发 1 普通 2连续生效
         self.casting_cooldown=0 #冷却时间
-        self.ammunition=ActorValue(ActorValueType.amount,ammunition)#弹药量
-        self.allow_attack=True#该回合正常普通攻击
+        self.ammunition=ActorValue(ActorValueType.amount,DefaultValue_If_None(ammunition,1))#弹药量
+        self.allow_attack=DefaultValue_If_None(allow_attack,True)#施法时是否允许普攻
         self.AI_module=None 
 
 
@@ -461,6 +461,8 @@ class Battle():
         for i in self.order:
             for actor in self.Groups[i].members:
                 actor.in_battle=self
+                actor.reset_ammunition()
+
         event_onbattlestart(self)                
 
 
@@ -481,7 +483,7 @@ class Battle():
                 actor.End_Battle()
     def Start_OneTurn(self, round_index=1):
         if flag_debuglog:print("开始回合:", round_index)
-        event_onturnstart(round_index)
+        event_onturnstart(round_index,self)
         """开始一轮战斗"""
         if flag_input_in_battle:
             self.Groups[0].Show_Members(flag_showstate=True)
@@ -524,7 +526,7 @@ class Battle():
                         
                         actor.cast_attack(enemy_target,state={"round":round_index,"environment":[]})
         self.natural_regenerate()
-        event_onturnend(round_index)
+        event_onturnend(round_index,self)
         # other.natural_regenerate()
 #技能 普通攻击， 对方回合……回复
     def natural_regenerate(self):
@@ -618,6 +620,10 @@ class Actor():
     def Is_SameGroup(self,targ):
         """判断是否属于同一阵营"""
         return bool(self.parent_group == targ.parent_group)
+    def reset_ammunition(self):
+        """重置弹药"""
+        for spell in self.active_spelllist:
+            spell.ammunition.currentvalue = spell.ammunition.maxvalue
     def cast_spell(self,spell:Skill,target=None):#  发动技能效果  
         """施放技能"""
         if flag_debuglog>=5: print(strcat(self.name,"施放技能",spell.name))
@@ -1119,9 +1125,14 @@ class Effect():
             # {"event_name":"","callback":fun_, "params":{},"text":""}
             script_info["text"]
             event_name=script_info.get("event_name","OnEffectStart")
+            condition_kwargs=None
+            if event_name in ["OnEffectStart","OnEffectEnd"]:
+                condition_kwargs = {"effect":self}
+            if event_name in ["OnTurnStart","OnTurnEnd","OnBattleStart","OnBattleEnd"]:
+                condition_kwargs = {"battle_instance":target.in_battle}
             listener=Listener(event_name=event_name, 
                               callback=eval("Effect."+script_info.get("fun_name","Empty"),globals(),locals()),
-                              condition_kwargs={"effect":self} if event_name == "OnEffectStart" else None,
+                              condition_kwargs=condition_kwargs,
                               )
             params0=dict( self=self ,caster=caster,target=target,effect=self  )
             
@@ -2100,10 +2111,10 @@ def event_oneffectstart(caster, target, effect):
 def event_oneffectend(caster, target, effect):
     """发布效果结束事件：监听器接收参数 (caster, target, effect) 在 ev.kwargs 中。"""
     dispatch_event("OnEffectEnd", caster=caster, target=target, effect=effect)
-def event_onturnstart(turn_index): #"OnTurnStart"
-    dispatch_event("OnTurnStart", turn_index=turn_index)
-def event_onturnend(turn_index): #"OnTurnEnd"
-    dispatch_event("OnTurnEnd", turn_index=turn_index)
+def event_onturnstart(turn_index,battle_instance): #"OnTurnStart"
+    dispatch_event("OnTurnStart", turn_index=turn_index, battle_instance=battle_instance)
+def event_onturnend(turn_index,battle_instance): #"OnTurnEnd"
+    dispatch_event("OnTurnEnd", turn_index=turn_index, battle_instance=battle_instance)
 #battle start
 def event_onbattlestart(battle_instance): #"OnBattleStart"
     dispatch_event("OnBattleStart", battle_instance=battle_instance)
@@ -2183,9 +2194,9 @@ dat_skill = pandas.read_csv("./csv/skills.csv",  header=0)
 for i in range(len(dat_skill)):
     dic=dat_skill.loc[i].to_dict()
 
-    skillbase=Skill(name=dic["Name"],baseID=dic['BaseID'],default_param=dic["DefaultParams"]
+    skillbase=Skill(name=dic["Name"],baseID=dic['BaseID'],default_param=dic["DefaultParams"],allow_attack= dic['allow_attack']
                     ,mana_cost=dic["mana_cost"],targetpermit= dic['targetpermit']  ,delivery= dic['Delivery']  ,skilltype= dic['SkillType']
-                    ,description=dic["Description"],effect_dict=dic["effect_list"] )
+                    ,description=dic["Description"],effect_dict=dic["effect_list"],ammunition=dic["ammunition"] )
     skillbase.process_skill_effects()
     global_SkillList.append(skillbase)
 #加载 永不复还 敌人单位

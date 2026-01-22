@@ -1,6 +1,8 @@
 bloodthirsty_battleend
 OnBattleEnd
-def bloodthirsty_battleend(self,custom_param=0,**kwargs):
+def bloodthirsty_battleend(self, battle_instance=0,**kwargs):
+    if self.target.in_battle !=battle_instance:
+        return #print("not battle self")
     self.Recover()
     if flag_debuglog>=5:print("end battle recover",self.name)
     #self.value=self.magnitude*(injured_proportion)*100
